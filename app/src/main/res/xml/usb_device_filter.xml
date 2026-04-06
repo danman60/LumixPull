@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Panasonic Lumix cameras (vendor ID 0x04DA = 1242) -->
+    <usb-device vendor-id="1242" />
+</resources>
