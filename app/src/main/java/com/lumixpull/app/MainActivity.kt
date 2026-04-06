@@ -114,15 +114,7 @@ fun LumixPullScreen(
 
 @Composable
 fun IdleView(onConnect: () -> Unit) {
-    Spacer(modifier = Modifier.height(16.dp))
-    Icon(Icons.Default.Usb, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-    Spacer(modifier = Modifier.height(16.dp))
-    Text(
-        text = "Set camera to Tether mode, connect via USB-C",
-        fontSize = 14.sp,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = TextAlign.Center
-    )
+    SetupInstructions()
     Spacer(modifier = Modifier.height(24.dp))
     Button(
         onClick = onConnect,
@@ -132,6 +124,47 @@ fun IdleView(onConnect: () -> Unit) {
         Icon(Icons.Default.Usb, contentDescription = null, modifier = Modifier.size(20.dp))
         Spacer(modifier = Modifier.width(8.dp))
         Text("Connect", fontSize = 16.sp)
+    }
+}
+
+@Composable
+fun SetupInstructions() {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            Text("Setup", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.height(16.dp))
+
+            InstructionStep(1, "Camera: USB Mode", "Menu > Setup (wrench) > USB > set to PC(Tether)")
+            Spacer(modifier = Modifier.height(12.dp))
+            InstructionStep(2, "Connect", "Plug camera into phone with USB-C cable")
+            Spacer(modifier = Modifier.height(12.dp))
+            InstructionStep(3, "Allow Access", "Tap Allow on the USB permission popup")
+            Spacer(modifier = Modifier.height(12.dp))
+            InstructionStep(4, "Transfer", "Tap Transfer Photos (or Test with 3 first)")
+            Spacer(modifier = Modifier.height(12.dp))
+            InstructionStep(5, "Google Photos", "Library > Photos on device > enable Lumix folder")
+        }
+    }
+}
+
+@Composable
+fun InstructionStep(number: Int, title: String, detail: String) {
+    Row(verticalAlignment = Alignment.Top) {
+        Text(
+            text = "$number",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.width(24.dp)
+        )
+        Column {
+            Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            Text(detail, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -234,11 +267,13 @@ fun DoneView(state: UiState, onRescan: () -> Unit, onResetHistory: () -> Unit) {
 
 @Composable
 fun ErrorView(errorMessage: String?, onRetry: () -> Unit) {
-    Icon(Icons.Default.Error, contentDescription = null, modifier = Modifier.size(80.dp), tint = MaterialTheme.colorScheme.error)
-    Spacer(modifier = Modifier.height(24.dp))
+    Icon(Icons.Default.Error, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.error)
+    Spacer(modifier = Modifier.height(16.dp))
     Text(errorMessage ?: "Something went wrong", fontSize = 14.sp, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
-    Spacer(modifier = Modifier.height(24.dp))
+    Spacer(modifier = Modifier.height(16.dp))
     Button(onClick = onRetry, shape = RoundedCornerShape(16.dp)) { Text("Retry") }
+    Spacer(modifier = Modifier.height(24.dp))
+    SetupInstructions()
 }
 
 @Composable
