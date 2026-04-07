@@ -3,9 +3,11 @@ package com.lumixpull.app
 import android.content.Context
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.net.Uri
 import android.os.Build
 import android.os.storage.StorageManager
 import android.os.storage.StorageVolume
+import androidx.documentfile.provider.DocumentFile
 
 private const val DJI_VENDOR_ID = 0x2CA3
 
@@ -17,7 +19,8 @@ data class MountedVolume(
 )
 
 data class MediaFile(
-    val file: java.io.File,
+    val file: java.io.File? = null,
+    val uri: Uri? = null,
     val name: String,
     val sizeBytes: Long,
     val lastModified: Long,
@@ -196,6 +199,47 @@ class VolumeClient(private val context: Context) {
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * Scan media files from a SAF (Storage Access Framework) URI.
+     * Used when direct file paths are inaccessible.
+     */
+    fun scanMediaFromUri(context: Context, treeUri: Uri): List<MediaFile> {
+        val root = DocumentFile.fromTreeUri(context, treeUri) ?: return emptyList()
+
+        // Look for DCIM folder
+        val dcim = if (root.name.equals("DCIM", ignoreCase = true)) {
+            root
+        } else {
+            root.findFile("DCIM") ?: root
+        }
+
+        return scanDocumentTree(dcim)
+            .sortedByDescending { it.lastModified }
+    }
+
+    private fun scanDocumentTree(dir: DocumentFile): List<MediaFile> {
+        val files = mutableListOf<MediaFile>()
+        for (file in dir.listFiles()) {
+            if (file.isDirectory) {
+                files.addAll(scanDocumentTree(file))
+            } else if (file.isFile) {
+                val name = file.name ?: continue
+                if (isMedia(name)) {
+                    files.add(
+                        MediaFile(
+                            uri = file.uri,
+                            name = name,
+                            sizeBytes = file.length(),
+                            lastModified = file.lastModified(),
+                            isVideo = isVideo(name)
+                        )
+                    )
+                }
+            }
+        }
+        return files
     }
 
     private fun findVolumeRoot(appSpecificDir: java.io.File): java.io.File? {

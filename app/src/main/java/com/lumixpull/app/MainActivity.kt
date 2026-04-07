@@ -81,6 +81,22 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
 
+    private val openDocumentTree = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+            viewModel.onSafFolderSelected(uri)
+        }
+    }
+
+    fun launchFolderPicker() {
+        openDocumentTree.launch(null)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -105,7 +121,8 @@ class MainActivity : ComponentActivity() {
                         onTransfer = { viewModel.transfer() },
                         onTestTransfer = { viewModel.testTransfer() },
                         onResetHistory = viewModel::resetHistory,
-                        onSelectVolume = { viewModel.selectVolume(it) }
+                        onSelectVolume = { viewModel.selectVolume(it) },
+                        onPickFolder = { launchFolderPicker() }
                     )
                 }
             }
@@ -120,7 +137,8 @@ fun LumixPullScreen(
     onTransfer: () -> Unit,
     onResetHistory: () -> Unit,
     onTestTransfer: () -> Unit = {},
-    onSelectVolume: (String) -> Unit = {}
+    onSelectVolume: (String) -> Unit = {},
+    onPickFolder: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -151,7 +169,7 @@ fun LumixPullScreen(
                     TransferState.AWAITING_PERMISSION -> PermissionView()
                     TransferState.CONNECTING -> ConnectingView()
                     TransferState.SCANNING -> ScanningView()
-                    TransferState.PICK_VOLUME -> VolumePickerView(state, onSelectVolume)
+                    TransferState.PICK_VOLUME -> VolumePickerView(state, onSelectVolume, onPickFolder)
                     TransferState.READY -> ReadyView(state, onTransfer, onTestTransfer)
                     TransferState.TRANSFERRING -> TransferringView(state.progress)
                     TransferState.DONE -> DoneView(state, onRetry, onResetHistory)
@@ -359,37 +377,59 @@ fun PulsingIcon(icon: ImageVector, tint: Color) {
 // ─── Ready ───
 
 @Composable
-fun VolumePickerView(state: UiState, onSelectVolume: (String) -> Unit) {
+fun VolumePickerView(state: UiState, onSelectVolume: (String) -> Unit, onPickFolder: () -> Unit) {
     Text("Select Storage", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
     Spacer(modifier = Modifier.height(8.dp))
-    Text(
-        "${state.cameraName ?: "Device"} has multiple storage locations",
-        fontSize = 13.sp,
-        color = LumixOnSurfaceVariant,
-        textAlign = TextAlign.Center
-    )
-    Spacer(modifier = Modifier.height(16.dp))
 
-    for (volume in state.availableVolumes) {
-        Card(
-            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-            colors = CardDefaults.cardColors(containerColor = LumixSurfaceElevated),
-            shape = RoundedCornerShape(14.dp),
-            onClick = { onSelectVolume(volume.path) }
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
+    if (state.availableVolumes.isEmpty()) {
+        Text(
+            "Storage detected but not accessible.\nUse the folder picker to grant access.",
+            fontSize = 13.sp,
+            color = LumixOnSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+    } else {
+        Text(
+            "${state.cameraName ?: "Device"} has multiple storage locations",
+            fontSize = 13.sp,
+            color = LumixOnSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+
+        for (volume in state.availableVolumes) {
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                colors = CardDefaults.cardColors(containerColor = LumixSurfaceElevated),
+                shape = RoundedCornerShape(14.dp),
+                onClick = { onSelectVolume(volume.path) }
             ) {
-                Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(24.dp), tint = LumixPrimary)
-                Spacer(modifier = Modifier.width(12.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(volume.name, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                    Text("${volume.fileCount} media files", fontSize = 12.sp, color = LumixOnSurfaceVariant)
-                    Text(volume.path, fontSize = 10.sp, color = LumixOnSurfaceVariant.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(24.dp), tint = LumixPrimary)
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(volume.name, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Text("${volume.fileCount} media files", fontSize = 12.sp, color = LumixOnSurfaceVariant)
+                        Text(volume.path, fontSize = 10.sp, color = LumixOnSurfaceVariant.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
             }
         }
+    }
+
+    Spacer(modifier = Modifier.height(16.dp))
+    Button(
+        onClick = onPickFolder,
+        modifier = Modifier.fillMaxWidth().height(54.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = LumixPrimary, contentColor = LumixOnPrimary)
+    ) {
+        Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(20.dp))
+        Spacer(modifier = Modifier.width(8.dp))
+        Text("Browse for Storage", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 

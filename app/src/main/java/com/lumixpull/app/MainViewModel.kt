@@ -3,6 +3,7 @@ package com.lumixpull.app
 import android.app.Application
 import android.content.BroadcastReceiver
 import android.content.Context
+import android.net.Uri
 import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbManager
@@ -187,10 +188,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         debug.appendLine(volDebug)
 
         if (volumes.isEmpty()) {
-            debug.appendLine("DJI detected but no mounted volumes found")
+            debug.appendLine("No accessible volumes — showing folder picker")
             _state.value = _state.value.copy(
-                transferState = TransferState.ERROR,
-                errorMessage = "DJI detected but storage not mounted.\nTry unplugging and reconnecting.",
+                transferState = TransferState.PICK_VOLUME,
+                availableVolumes = emptyList(),
                 debugLog = debug.toString()
             )
             return
@@ -214,6 +215,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 availableVolumes = volumes,
                 debugLog = debug.toString()
             )
+        }
+    }
+
+    fun onSafFolderSelected(uri: Uri) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(transferState = TransferState.SCANNING)
+            try {
+                val app = getApplication<Application>()
+                val files = withContext(Dispatchers.IO) { volumeClient.scanMediaFromUri(app, uri) }
+                volumeFiles = files
+
+                val photoCount = files.count { !it.isVideo }
+                val videoCount = files.count { it.isVideo }
+                val debug = _state.value.debugLog + "\nSAF scan: $photoCount photos, $videoCount videos from ${uri.lastPathSegment}"
+
+                _state.value = _state.value.copy(
+                    transferState = if (files.isNotEmpty()) TransferState.READY else TransferState.DONE,
+                    newPhotoCount = files.size,
+                    totalPhotosOnCard = files.size,
+                    result = if (files.isEmpty()) TransferResult(0, 0, emptyList()) else null,
+                    debugLog = debug
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    transferState = TransferState.ERROR,
+                    errorMessage = "SAF scan failed: ${e.message}\n${e.stackTraceToString().take(300)}"
+                )
+            }
         }
     }
 

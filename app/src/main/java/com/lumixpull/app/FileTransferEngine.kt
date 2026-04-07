@@ -103,7 +103,7 @@ class FileTransferEngine(private val context: Context) {
             ?: throw Exception("MediaStore insert failed")
 
         try {
-            copyFileToUri(media.file, uri)
+            copyMediaToUri(media, uri)
             finalizePending(uri, MediaStore.Images.Media.IS_PENDING)
             notifyMediaScanner(uri, "image/jpeg")
         } catch (e: Exception) {
@@ -132,7 +132,7 @@ class FileTransferEngine(private val context: Context) {
             ?: throw Exception("MediaStore insert failed")
 
         try {
-            copyFileToUri(media.file, uri)
+            copyMediaToUri(media, uri)
             finalizePending(uri, MediaStore.Video.Media.IS_PENDING)
             notifyMediaScanner(uri, mimeType)
         } catch (e: Exception) {
@@ -141,12 +141,19 @@ class FileTransferEngine(private val context: Context) {
         }
     }
 
-    private fun copyFileToUri(source: java.io.File, destUri: Uri) {
+    private fun copyMediaToUri(media: MediaFile, destUri: Uri) {
         val resolver = context.contentResolver
         resolver.openOutputStream(destUri)?.use { out ->
-            FileInputStream(source).use { input ->
-                val copied = input.copyTo(out, bufferSize = 131072)
-                if (copied == 0L) throw Exception("Copied 0 bytes (source: ${source.length()})")
+            val input = if (media.file != null) {
+                FileInputStream(media.file)
+            } else if (media.uri != null) {
+                resolver.openInputStream(media.uri) ?: throw Exception("Failed to open source URI")
+            } else {
+                throw Exception("No file or URI for media")
+            }
+            input.use {
+                val copied = it.copyTo(out, bufferSize = 131072)
+                if (copied == 0L) throw Exception("Copied 0 bytes")
             }
         } ?: throw Exception("openOutputStream returned null")
     }
