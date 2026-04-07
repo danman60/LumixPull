@@ -62,30 +62,61 @@ class VolumeClient(private val context: Context) {
         debug.appendLine("Storage volumes: ${storageVolumes.size}")
 
         for (volume in storageVolumes) {
-            val path = getVolumePath(volume)
+            val rawPath = getVolumePath(volume)
             val desc = volume.getDescription(context) ?: "Unknown"
             val state = volume.state
-            debug.appendLine("  $desc: primary=${volume.isPrimary} removable=${volume.isRemovable} state=$state path=$path")
+            debug.appendLine("  $desc: primary=${volume.isPrimary} removable=${volume.isRemovable} state=$state path=$rawPath")
 
             if (volume.isPrimary) continue
             if (state != "mounted") continue
-            if (path == null) continue
+            if (rawPath == null) continue
 
-            val dcim = java.io.File(path, "DCIM")
-            val hasDcim = dcim.exists() && dcim.isDirectory
-            debug.appendLine("    DCIM: $hasDcim")
+            // Try multiple path variants — /mnt/media_rw/ is restricted, /storage/ is accessible
+            val uuid = rawPath.substringAfterLast("/")
+            val pathCandidates = listOf(
+                rawPath,
+                "/storage/$uuid",
+                "/mnt/media_rw/$uuid"
+            ).distinct()
 
-            // Count media files if DCIM exists
-            val mediaCount = if (hasDcim) countMediaFiles(dcim) else 0
+            var usablePath: String? = null
+            for (candidate in pathCandidates) {
+                val dir = java.io.File(candidate)
+                val canRead = dir.exists() && dir.canRead()
+                val dcim = java.io.File(candidate, "DCIM")
+                val hasDcim = dcim.exists() && dcim.isDirectory
+                debug.appendLine("    try $candidate: exists=${dir.exists()} canRead=$canRead DCIM=$hasDcim")
 
-            volumes.add(
-                MountedVolume(
-                    path = path,
-                    name = desc,
-                    isPrimary = volume.isPrimary,
-                    fileCount = mediaCount
+                // List root contents for debugging
+                if (dir.exists() && dir.canRead()) {
+                    val entries = dir.listFiles()
+                    debug.appendLine("      root entries: ${entries?.map { it.name } ?: "null"}")
+                    if (hasDcim) {
+                        usablePath = candidate
+                        break
+                    }
+                    // Even without DCIM, if readable, use it (might have different folder structure)
+                    if (usablePath == null && entries != null && entries.isNotEmpty()) {
+                        usablePath = candidate
+                    }
+                }
+            }
+
+            if (usablePath != null) {
+                val dcim = java.io.File(usablePath, "DCIM")
+                val mediaCount = if (dcim.exists()) countMediaFiles(dcim) else 0
+                debug.appendLine("    Using: $usablePath ($mediaCount media files)")
+                volumes.add(
+                    MountedVolume(
+                        path = usablePath,
+                        name = desc,
+                        isPrimary = false,
+                        fileCount = mediaCount
+                    )
                 )
-            )
+            } else {
+                debug.appendLine("    No readable path found for $desc")
+            }
         }
 
         // Also check common USB mount points

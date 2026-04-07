@@ -73,11 +73,13 @@ class MtpTransferEngine(private val context: Context) {
                 continue
             }
 
-            // Skip non-JPEG files
+            // Skip non-media files (keep photos + videos)
             val name = info.name ?: "unknown"
-            val isJpeg = name.lowercase().let { it.endsWith(".jpg") || it.endsWith(".jpeg") } ||
+            val lower = name.lowercase()
+            val isPhoto = lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
                 info.format == MtpConstants.FORMAT_EXIF_JPEG || info.format == MtpConstants.FORMAT_JFIF
-            if (!isJpeg) {
+            val isVideo = lower.endsWith(".mp4") || lower.endsWith(".mov")
+            if (!isPhoto && !isVideo) {
                 skipped++
                 continue
             }
@@ -106,7 +108,11 @@ class MtpTransferEngine(private val context: Context) {
                     throw Exception("Download failed (all methods returned empty)")
                 }
 
-                saveToMediaStore(name, tempFile, info.dateModified.toLong())
+                if (isVideo) {
+                    saveVideoToMediaStore(name, tempFile, info.dateModified.toLong())
+                } else {
+                    saveToMediaStore(name, tempFile, info.dateModified.toLong())
+                }
                 existingNames.add(name) // Track for duplicate prevention
                 bytesTransferred += tempFile.length()
                 transferred++
@@ -148,7 +154,7 @@ class MtpTransferEngine(private val context: Context) {
         TransferResult(
             transferred = transferred,
             failed = failed.size,
-            errors = listOf("Skipped: $skipped (non-JPEG or already transferred)") + failed
+            errors = listOf("Skipped: $skipped (non-media or already transferred)") + failed
         )
     }
 
@@ -158,17 +164,20 @@ class MtpTransferEngine(private val context: Context) {
     private fun getExistingLumixPhotos(): MutableSet<String> {
         val names = mutableSetOf<String>()
         try {
-            val cursor = context.contentResolver.query(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                arrayOf(MediaStore.Images.Media.DISPLAY_NAME),
-                "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?",
-                arrayOf("%Lumix%"),
-                null
-            )
-            cursor?.use {
-                while (it.moveToNext()) {
-                    val name = it.getString(0)
-                    if (name != null) names.add(name)
+            // Check photos
+            for (contentUri in listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)) {
+                val cursor = context.contentResolver.query(
+                    contentUri,
+                    arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
+                    "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?",
+                    arrayOf("%Lumix%"),
+                    null
+                )
+                cursor?.use {
+                    while (it.moveToNext()) {
+                        val name = it.getString(0)
+                        if (name != null) names.add(name)
+                    }
                 }
             }
         } catch (_: Exception) {}
@@ -219,21 +228,59 @@ class MtpTransferEngine(private val context: Context) {
                 resolver.update(uri, update, null, null)
             }
 
-            notifyMediaScanner(uri)
+            notifyMediaScanner(uri, "image/jpeg")
         } catch (e: Exception) {
             resolver.delete(uri, null, null)
             throw e
         }
     }
 
-    private fun notifyMediaScanner(uri: Uri) {
+    private fun saveVideoToMediaStore(name: String, sourceFile: File, dateTaken: Long) {
+        val resolver = context.contentResolver
+        val mimeType = if (name.lowercase().endsWith(".mov")) "video/quicktime" else "video/mp4"
+
+        val contentValues = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, name)
+            put(MediaStore.Video.Media.MIME_TYPE, mimeType)
+            put(MediaStore.Video.Media.DATE_TAKEN, dateTaken * 1000)
+            put(MediaStore.Video.Media.DATE_ADDED, System.currentTimeMillis() / 1000)
+            put(MediaStore.Video.Media.SIZE, sourceFile.length())
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/Lumix")
+                put(MediaStore.Video.Media.IS_PENDING, 1)
+            }
+        }
+
+        val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, contentValues)
+            ?: throw Exception("MediaStore video insert failed")
+
         try {
-            val cursor = context.contentResolver.query(uri, arrayOf(MediaStore.Images.Media.DATA), null, null, null)
+            resolver.openOutputStream(uri)?.use { outputStream ->
+                FileInputStream(sourceFile).use { inputStream ->
+                    val copied = inputStream.copyTo(outputStream, bufferSize = 131072)
+                    if (copied == 0L) throw Exception("Copied 0 bytes")
+                }
+            } ?: throw Exception("openOutputStream returned null")
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val update = ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }
+                resolver.update(uri, update, null, null)
+            }
+            notifyMediaScanner(uri, mimeType)
+        } catch (e: Exception) {
+            resolver.delete(uri, null, null)
+            throw e
+        }
+    }
+
+    private fun notifyMediaScanner(uri: Uri, mimeType: String) {
+        try {
+            val cursor = context.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)
             cursor?.use {
                 if (it.moveToFirst()) {
                     val path = it.getString(0)
                     if (path != null) {
-                        MediaScannerConnection.scanFile(context, arrayOf(path), arrayOf("image/jpeg"), null)
+                        MediaScannerConnection.scanFile(context, arrayOf(path), arrayOf(mimeType), null)
                     }
                 }
             }
