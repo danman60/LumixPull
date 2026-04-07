@@ -15,7 +15,8 @@ data class MountedVolume(
     val path: String,
     val name: String,
     val isPrimary: Boolean,
-    val fileCount: Int = 0
+    val fileCount: Int = 0,
+    val accessible: Boolean = true
 )
 
 data class MediaFile(
@@ -118,7 +119,16 @@ class VolumeClient(private val context: Context) {
                     )
                 )
             } else {
-                debug.appendLine("    No readable path found for $desc")
+                debug.appendLine("    No readable path found for $desc — adding as inaccessible")
+                volumes.add(
+                    MountedVolume(
+                        path = rawPath,
+                        name = desc,
+                        isPrimary = false,
+                        fileCount = 0,
+                        accessible = false
+                    )
+                )
             }
         }
 

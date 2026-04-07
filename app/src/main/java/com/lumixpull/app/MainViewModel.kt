@@ -167,7 +167,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     cameraName = "USB Device",
                     debugLog = debug.toString()
                 )
-                handleVolumes(volumes, debug)
+                val accessibleVolumes = volumes.filter { it.accessible }
+                if (accessibleVolumes.size == 1 && accessibleVolumes[0].fileCount > 0) {
+                    selectVolume(accessibleVolumes[0].path)
+                    _state.value = _state.value.copy(
+                        availableVolumes = volumes,
+                        debugLog = debug.toString()
+                    )
+                } else {
+                    _state.value = _state.value.copy(
+                        transferState = TransferState.PICK_VOLUME,
+                        availableVolumes = volumes,
+                        debugLog = debug.toString()
+                    )
+                }
                 return@launch
             }
 
@@ -183,33 +196,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ─── DJI / Volume-based transfer ───
 
     private suspend fun startDji(debug: StringBuilder) {
-        // Find mounted volumes
         val (volumes, volDebug) = withContext(Dispatchers.IO) { volumeClient.findMountedVolumes() }
         debug.appendLine(volDebug)
 
-        if (volumes.isEmpty()) {
-            debug.appendLine("No accessible volumes — showing folder picker")
-            _state.value = _state.value.copy(
-                transferState = TransferState.PICK_VOLUME,
-                availableVolumes = emptyList(),
-                debugLog = debug.toString()
-            )
-            return
-        }
+        val accessibleVolumes = volumes.filter { it.accessible }
 
-        handleVolumes(volumes, debug)
-    }
-
-    private fun handleVolumes(volumes: List<MountedVolume>, debug: StringBuilder) {
-        if (volumes.size == 1) {
-            // Single volume — go straight to scan
-            selectVolume(volumes[0].path)
+        if (accessibleVolumes.size == 1 && accessibleVolumes[0].fileCount > 0) {
+            // Single accessible volume with files — go straight to scan
+            selectVolume(accessibleVolumes[0].path)
             _state.value = _state.value.copy(
                 availableVolumes = volumes,
                 debugLog = debug.toString()
             )
         } else {
-            // Multiple volumes — let user pick
+            // Show picker — either multiple volumes, no accessible ones, or need SAF
             _state.value = _state.value.copy(
                 transferState = TransferState.PICK_VOLUME,
                 availableVolumes = volumes,

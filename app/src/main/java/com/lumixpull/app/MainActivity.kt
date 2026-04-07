@@ -378,58 +378,86 @@ fun PulsingIcon(icon: ImageVector, tint: Color) {
 
 @Composable
 fun VolumePickerView(state: UiState, onSelectVolume: (String) -> Unit, onPickFolder: () -> Unit) {
-    Text("Select Storage", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-    Spacer(modifier = Modifier.height(8.dp))
+    // Device header
+    Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(48.dp), tint = LumixPrimary)
+    Spacer(modifier = Modifier.height(12.dp))
+    Text(
+        state.cameraName?.substringBefore("-") ?: "Device",
+        fontSize = 20.sp,
+        fontWeight = FontWeight.Bold
+    )
+    Spacer(modifier = Modifier.height(4.dp))
+    Text("Select storage to transfer from", fontSize = 13.sp, color = LumixOnSurfaceVariant)
+    Spacer(modifier = Modifier.height(20.dp))
 
-    if (state.availableVolumes.isEmpty()) {
-        Text(
-            "Storage detected but not accessible.\nUse the folder picker to grant access.",
-            fontSize = 13.sp,
-            color = LumixOnSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
-    } else {
-        Text(
-            "${state.cameraName ?: "Device"} has multiple storage locations",
-            fontSize = 13.sp,
-            color = LumixOnSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
-        Spacer(modifier = Modifier.height(16.dp))
+    for (volume in state.availableVolumes) {
+        val icon = when {
+            volume.name.contains("SD", ignoreCase = true) -> Icons.Default.PhotoLibrary
+            volume.name.contains("Internal", ignoreCase = true) -> Icons.Default.Usb
+            else -> Icons.Default.PhotoLibrary
+        }
+        val subtitle = when {
+            volume.accessible && volume.fileCount > 0 -> "${volume.fileCount} media files"
+            volume.accessible -> "No media files found"
+            else -> "Tap to grant access"
+        }
 
-        for (volume in state.availableVolumes) {
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                colors = CardDefaults.cardColors(containerColor = LumixSurfaceElevated),
-                shape = RoundedCornerShape(14.dp),
-                onClick = { onSelectVolume(volume.path) }
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+            colors = CardDefaults.cardColors(containerColor = LumixSurfaceElevated),
+            shape = RoundedCornerShape(14.dp),
+            onClick = {
+                if (volume.accessible && volume.fileCount > 0) {
+                    onSelectVolume(volume.path)
+                } else {
+                    onPickFolder()
+                }
+            }
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(18.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(LumixPrimary.copy(alpha = 0.12f))
                 ) {
-                    Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(24.dp), tint = LumixPrimary)
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(volume.name, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                        Text("${volume.fileCount} media files", fontSize = 12.sp, color = LumixOnSurfaceVariant)
-                        Text(volume.path, fontSize = 10.sp, color = LumixOnSurfaceVariant.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
+                    Icon(icon, contentDescription = null, modifier = Modifier.size(22.dp), tint = LumixPrimary)
+                }
+                Spacer(modifier = Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(volume.name, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                    Text(subtitle, fontSize = 12.sp, color = LumixOnSurfaceVariant)
+                }
+                if (!volume.accessible) {
+                    Icon(
+                        Icons.Default.PhotoLibrary,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = LumixPrimary.copy(alpha = 0.6f)
+                    )
                 }
             }
         }
     }
 
-    Spacer(modifier = Modifier.height(16.dp))
-    Button(
-        onClick = onPickFolder,
-        modifier = Modifier.fillMaxWidth().height(54.dp),
-        shape = RoundedCornerShape(14.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = LumixPrimary, contentColor = LumixOnPrimary)
-    ) {
-        Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(20.dp))
-        Spacer(modifier = Modifier.width(8.dp))
-        Text("Browse for Storage", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+    if (state.availableVolumes.isEmpty()) {
+        Text(
+            "No storage volumes detected.\nUse the button below to browse manually.",
+            fontSize = 13.sp,
+            color = LumixOnSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(
+            onClick = onPickFolder,
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = LumixPrimary, contentColor = LumixOnPrimary)
+        ) { Text("Browse Storage", fontSize = 14.sp) }
     }
 }
 
