@@ -17,7 +17,6 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
 private const val ACTION_USB_PERMISSION = "com.lumixpull.app.USB_PERMISSION"
-private const val PANASONIC_VENDOR_ID = 0x04DA
 
 data class MtpPhoto(
     val objectHandle: Int,
@@ -33,8 +32,8 @@ class MtpCameraClient(private val context: Context) {
     private var mtpDevice: MtpDevice? = null
     private var usbConnection: UsbDeviceConnection? = null
 
-    fun findCamera(): UsbDevice? {
-        return usbManager.deviceList.values.firstOrNull { it.vendorId == PANASONIC_VENDOR_ID }
+    fun findDevice(vendorIds: List<Int>): UsbDevice? {
+        return usbManager.deviceList.values.firstOrNull { it.vendorId in vendorIds }
     }
 
     fun hasPermission(device: UsbDevice): Boolean {
@@ -153,41 +152,71 @@ class MtpCameraClient(private val context: Context) {
     /**
      * Fast scan: just get object handles without querying info on each one.
      * Returns raw handles + count. Skips the slow per-object getObjectInfo() calls.
+     *
+     * When quirks.useAllStoragesWildcard is true (Lumix), uses 0xFFFFFFFF for storage ID.
+     * Otherwise, iterates individual storage IDs (standard MTP for Canon/Nikon/Sony etc.)
      */
-    fun quickScan(): Pair<IntArray, String> {
+    fun quickScan(quirks: MtpQuirks = MtpQuirks()): Pair<IntArray, String> {
         val mtp = mtpDevice ?: throw Exception("Not connected")
         val debug = StringBuilder()
-        val allStorage = 0xFFFFFFFF.toInt()
 
-        // Try format-filtered first (instant if camera supports it)
-        val jpegHandles = mtp.getObjectHandles(allStorage, MtpConstants.FORMAT_EXIF_JPEG, 0)
-        debug.appendLine("EXIF_JPEG filter: ${jpegHandles?.size ?: "null"}")
+        if (quirks.useAllStoragesWildcard) {
+            debug.appendLine("Using all-storages wildcard (0xFFFFFFFF)")
+            return quickScanStorage(mtp, 0xFFFFFFFF.toInt(), debug)
+        }
+
+        // Standard MTP: iterate individual storage IDs
+        val storageIds = mtp.storageIds
+        debug.appendLine("Scanning ${storageIds?.size ?: 0} storage unit(s)")
+
+        if (storageIds == null || storageIds.isEmpty()) {
+            throw Exception("No storage found on device")
+        }
+
+        val allHandles = mutableListOf<Int>()
+        for (storageId in storageIds) {
+            debug.appendLine("Storage 0x${"%08X".format(storageId)}:")
+            val (handles, storageDebug) = quickScanStorage(mtp, storageId, StringBuilder())
+            debug.appendLine(storageDebug)
+            allHandles.addAll(handles.toList())
+        }
+
+        if (allHandles.isEmpty()) {
+            throw Exception("No objects found on device")
+        }
+
+        debug.appendLine("Total handles across all storages: ${allHandles.size}")
+        return Pair(allHandles.toIntArray(), debug.toString())
+    }
+
+    private fun quickScanStorage(mtp: MtpDevice, storageId: Int, debug: StringBuilder): Pair<IntArray, String> {
+        // Try format-filtered first (instant if device supports it)
+        val jpegHandles = mtp.getObjectHandles(storageId, MtpConstants.FORMAT_EXIF_JPEG, 0)
+        debug.appendLine("  EXIF_JPEG filter: ${jpegHandles?.size ?: "null"}")
 
         if (jpegHandles != null && jpegHandles.isNotEmpty()) {
-            debug.appendLine("Fast path: got ${jpegHandles.size} JPEG handles directly")
+            debug.appendLine("  Fast path: got ${jpegHandles.size} JPEG handles directly")
             return Pair(jpegHandles, debug.toString())
         }
 
         // Also try JFIF format
-        val jfifHandles = mtp.getObjectHandles(allStorage, MtpConstants.FORMAT_JFIF, 0)
-        debug.appendLine("JFIF filter: ${jfifHandles?.size ?: "null"}")
+        val jfifHandles = mtp.getObjectHandles(storageId, MtpConstants.FORMAT_JFIF, 0)
+        debug.appendLine("  JFIF filter: ${jfifHandles?.size ?: "null"}")
 
         if (jfifHandles != null && jfifHandles.isNotEmpty()) {
-            debug.appendLine("Fast path: got ${jfifHandles.size} JFIF handles directly")
+            debug.appendLine("  Fast path: got ${jfifHandles.size} JFIF handles directly")
             return Pair(jfifHandles, debug.toString())
         }
 
-        // Fallback: get ALL object handles (just the handle list, no per-object info)
-        val allHandles = mtp.getObjectHandles(allStorage, 0, 0)
-        debug.appendLine("All objects: ${allHandles?.size ?: "null"}")
+        // Fallback: get ALL object handles
+        val allHandles = mtp.getObjectHandles(storageId, 0, 0)
+        debug.appendLine("  All objects: ${allHandles?.size ?: "null"}")
 
         if (allHandles == null || allHandles.isEmpty()) {
-            throw Exception("No objects found on camera")
+            return Pair(intArrayOf(), debug.toString())
         }
 
-        // We have handles but don't know which are JPEGs.
-        // Return all handles - we'll filter during transfer by checking info per-file.
-        debug.appendLine("No format filter available. Will filter during transfer.")
+        debug.appendLine("  No format filter available. Will filter during transfer.")
         return Pair(allHandles, debug.toString())
     }
 

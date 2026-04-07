@@ -1,15 +1,12 @@
 package com.lumixpull.app
 
 import android.content.Context
-import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.net.Uri
 import android.os.Build
 import android.os.storage.StorageManager
 import android.os.storage.StorageVolume
 import androidx.documentfile.provider.DocumentFile
-
-private const val DJI_VENDOR_ID = 0x2CA3
 
 data class MountedVolume(
     val path: String,
@@ -32,10 +29,6 @@ class VolumeClient(private val context: Context) {
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     private val storageManager = context.getSystemService(Context.STORAGE_SERVICE) as StorageManager
-
-    fun findDjiDevice(): UsbDevice? {
-        return usbManager.deviceList.values.firstOrNull { it.vendorId == DJI_VENDOR_ID }
-    }
 
     /**
      * Find all mounted non-primary volumes (USB drives, SD cards exposed by devices).

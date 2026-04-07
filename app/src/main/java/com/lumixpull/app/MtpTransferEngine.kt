@@ -38,6 +38,7 @@ class MtpTransferEngine(private val context: Context) {
     suspend fun transferFromHandles(
         client: MtpCameraClient,
         handles: IntArray,
+        subfolder: String = "Lumix",
         appContext: Context,
         onProgress: (TransferProgress) -> Unit
     ): TransferResult = withContext(Dispatchers.IO) {
@@ -47,9 +48,9 @@ class MtpTransferEngine(private val context: Context) {
         var bytesTransferred = 0L
 
         // Build set of already-transferred filenames to skip duplicates
-        val existingNames = getExistingLumixPhotos()
+        val existingNames = getExistingFiles(subfolder)
 
-        val tempDir = File(context.cacheDir, "lumix_transfer")
+        val tempDir = File(context.cacheDir, "mtp_transfer")
         tempDir.mkdirs()
 
         for ((index, handle) in handles.withIndex()) {
@@ -109,9 +110,9 @@ class MtpTransferEngine(private val context: Context) {
                 }
 
                 if (isVideo) {
-                    saveVideoToMediaStore(name, tempFile, info.dateModified.toLong())
+                    saveVideoToMediaStore(name, tempFile, info.dateModified.toLong(), subfolder)
                 } else {
-                    saveToMediaStore(name, tempFile, info.dateModified.toLong())
+                    saveToMediaStore(name, tempFile, info.dateModified.toLong(), subfolder)
                 }
                 existingNames.add(name) // Track for duplicate prevention
                 bytesTransferred += tempFile.length()
@@ -159,18 +160,17 @@ class MtpTransferEngine(private val context: Context) {
     }
 
     /**
-     * Query MediaStore for existing photos in Pictures/Lumix to avoid duplicates.
+     * Query MediaStore for existing files in Pictures/<subfolder> and Movies/<subfolder> to avoid duplicates.
      */
-    private fun getExistingLumixPhotos(): MutableSet<String> {
+    private fun getExistingFiles(subfolder: String): MutableSet<String> {
         val names = mutableSetOf<String>()
         try {
-            // Check photos
             for (contentUri in listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)) {
                 val cursor = context.contentResolver.query(
                     contentUri,
                     arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
                     "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?",
-                    arrayOf("%Lumix%"),
+                    arrayOf("%$subfolder%"),
                     null
                 )
                 cursor?.use {
@@ -188,13 +188,14 @@ class MtpTransferEngine(private val context: Context) {
     suspend fun transferPhotos(
         client: MtpCameraClient,
         photos: List<MtpPhoto>,
+        subfolder: String = "Lumix",
         onProgress: (TransferProgress) -> Unit
     ): TransferResult {
         val handles = photos.map { it.objectHandle }.toIntArray()
-        return transferFromHandles(client, handles, context, onProgress)
+        return transferFromHandles(client, handles, subfolder, context, onProgress)
     }
 
-    private fun saveToMediaStore(name: String, sourceFile: File, dateTaken: Long) {
+    private fun saveToMediaStore(name: String, sourceFile: File, dateTaken: Long, subfolder: String) {
         val resolver = context.contentResolver
 
         val contentValues = ContentValues().apply {
@@ -205,7 +206,7 @@ class MtpTransferEngine(private val context: Context) {
             put(MediaStore.Images.Media.SIZE, sourceFile.length())
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Lumix")
+                put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/$subfolder")
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
         }
@@ -235,7 +236,7 @@ class MtpTransferEngine(private val context: Context) {
         }
     }
 
-    private fun saveVideoToMediaStore(name: String, sourceFile: File, dateTaken: Long) {
+    private fun saveVideoToMediaStore(name: String, sourceFile: File, dateTaken: Long, subfolder: String) {
         val resolver = context.contentResolver
         val mimeType = if (name.lowercase().endsWith(".mov")) "video/quicktime" else "video/mp4"
 
@@ -246,7 +247,7 @@ class MtpTransferEngine(private val context: Context) {
             put(MediaStore.Video.Media.DATE_ADDED, System.currentTimeMillis() / 1000)
             put(MediaStore.Video.Media.SIZE, sourceFile.length())
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/Lumix")
+                put(MediaStore.Video.Media.RELATIVE_PATH, "${Environment.DIRECTORY_MOVIES}/$subfolder")
                 put(MediaStore.Video.Media.IS_PENDING, 1)
             }
         }

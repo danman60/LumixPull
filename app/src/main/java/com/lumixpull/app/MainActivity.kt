@@ -223,7 +223,7 @@ fun AppHeader() {
     }
     Spacer(modifier = Modifier.height(2.dp))
     Text(
-        "S5II USB-C Photo Transfer",
+        "USB-C Photo & Video Transfer",
         fontSize = 13.sp,
         color = LumixOnSurfaceVariant,
         letterSpacing = 1.sp
@@ -268,15 +268,15 @@ fun SetupInstructions() {
             )
             Spacer(modifier = Modifier.height(14.dp))
 
-            InstructionStep(1, "Camera USB Mode", "Menu > Setup > USB > PC(Tether)", Icons.Outlined.Settings)
+            InstructionStep(1, "Camera USB Mode", "Set USB mode to Tether/PTP/MTP", Icons.Outlined.Settings)
             Spacer(modifier = Modifier.height(10.dp))
-            InstructionStep(2, "Connect Cable", "USB-C to USB-C, camera to phone", Icons.Outlined.Cable)
+            InstructionStep(2, "Connect Cable", "USB-C to USB-C, device to phone", Icons.Outlined.Cable)
             Spacer(modifier = Modifier.height(10.dp))
             InstructionStep(3, "Allow Access", "Tap Allow on the permission popup", Icons.Outlined.Security)
             Spacer(modifier = Modifier.height(10.dp))
             InstructionStep(4, "Transfer", "Tap Transfer or Test with 3 files", Icons.Outlined.Sync)
             Spacer(modifier = Modifier.height(10.dp))
-            InstructionStep(5, "Google Photos", "Library > Photos on device > Lumix", Icons.Outlined.PhotoLibrary)
+            InstructionStep(5, "Google Photos", "Library > Photos on device", Icons.Outlined.PhotoLibrary)
         }
     }
 }
@@ -394,7 +394,7 @@ fun VolumePickerView(state: UiState, onSelectVolume: (String) -> Unit, onPickFol
     Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(48.dp), tint = LumixPrimary)
     Spacer(modifier = Modifier.height(12.dp))
     Text(
-        state.cameraName?.substringBefore("-") ?: "Device",
+        state.deviceProfile?.brand ?: state.cameraName ?: "Device",
         fontSize = 20.sp,
         fontWeight = FontWeight.Bold
     )

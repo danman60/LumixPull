@@ -18,12 +18,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class DeviceType {
-    LUMIX,  // Panasonic camera — MTP transfer
-    DJI,    // DJI drone — mounted volume transfer
-    UNKNOWN
-}
-
 enum class TransferState {
     IDLE,
     AWAITING_PERMISSION,
@@ -38,7 +32,7 @@ enum class TransferState {
 
 data class UiState(
     val transferState: TransferState = TransferState.IDLE,
-    val deviceType: DeviceType = DeviceType.UNKNOWN,
+    val deviceProfile: DeviceProfile? = null,
     val cameraDetected: Boolean = false,
     val cameraName: String? = null,
     val hasUsbPermission: Boolean = false,
@@ -49,7 +43,7 @@ data class UiState(
     val errorMessage: String? = null,
     val debugLog: String = "",
     val needsStoragePermission: Boolean = false,
-    // Volume picker for DJI
+    // Volume picker for mounted-volume devices
     val availableVolumes: List<MountedVolume> = emptyList(),
     val selectedVolumePath: String? = null
 )
@@ -127,7 +121,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         detectAndConnect()
     }
 
-    // ─── Auto-detect device type ───
+    // ─── Auto-detect device type via DeviceRegistry ───
 
     fun detectAndConnect() {
         viewModelScope.launch {
@@ -137,42 +131,82 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 errorMessage = null, result = null, progress = null
             )
 
-            // Check for DJI first (mounts as volume)
-            val djiDevice = volumeClient.findDjiDevice()
-            if (djiDevice != null) {
-                debug.appendLine("DJI device found: ${djiDevice.productName} (VID=0x${"%04X".format(djiDevice.vendorId)} PID=0x${"%04X".format(djiDevice.productId)})")
-                _state.value = _state.value.copy(
-                    deviceType = DeviceType.DJI,
-                    cameraDetected = true,
-                    cameraName = djiDevice.productName ?: "DJI Drone",
-                    debugLog = debug.toString()
-                )
-                startDji(debug)
-                return@launch
+            val usbManager = getApplication<Application>().getSystemService(Context.USB_SERVICE) as UsbManager
+            val usbDevices = usbManager.deviceList.values.toList()
+            debug.appendLine("USB devices found: ${usbDevices.size}")
+
+            // Scan all USB devices and match against DeviceRegistry
+            for (device in usbDevices) {
+                val profile = DeviceRegistry.findByVendorId(device.vendorId)
+                debug.appendLine("  ${device.productName ?: "Unknown"} VID=0x${"%04X".format(device.vendorId)} PID=0x${"%04X".format(device.productId)}")
+
+                if (profile != null) {
+                    debug.appendLine("  -> Matched: ${profile.brand} (${profile.transferMode})")
+                    _state.value = _state.value.copy(
+                        deviceProfile = profile,
+                        cameraDetected = true,
+                        cameraName = device.productName ?: profile.brand,
+                        debugLog = debug.toString()
+                    )
+
+                    when (profile.transferMode) {
+                        TransferMode.MTP -> {
+                            startMtp(device, profile, debug)
+                            return@launch
+                        }
+                        TransferMode.VOLUME -> {
+                            startVolume(profile, debug)
+                            return@launch
+                        }
+                    }
+                }
             }
 
-            // Check for Lumix camera (MTP)
-            val lumixDevice = mtpClient.findCamera()
-            if (lumixDevice != null) {
-                debug.appendLine("Lumix found: ${lumixDevice.productName} (VID=0x${"%04X".format(lumixDevice.vendorId)} PID=0x${"%04X".format(lumixDevice.productId)})")
+            // No known device matched — try auto-detection via interface classes
+            for (device in usbDevices) {
+                val detectedMode = DeviceRegistry.detectTransferMode(device)
+                debug.appendLine("  Auto-detect ${device.productName ?: "Unknown"}: $detectedMode")
+
+                val autoProfile = DeviceProfile(
+                    vendorId = device.vendorId,
+                    brand = device.productName ?: "USB Device",
+                    transferMode = detectedMode,
+                    subfolder = "USB"
+                )
+
                 _state.value = _state.value.copy(
-                    deviceType = DeviceType.LUMIX,
+                    deviceProfile = autoProfile,
                     cameraDetected = true,
-                    cameraName = lumixDevice.productName,
+                    cameraName = device.productName ?: "USB Device",
                     debugLog = debug.toString()
                 )
-                startLumix(lumixDevice, debug)
-                return@launch
+
+                when (detectedMode) {
+                    TransferMode.MTP -> {
+                        startMtp(device, autoProfile, debug)
+                        return@launch
+                    }
+                    TransferMode.VOLUME -> {
+                        startVolume(autoProfile, debug)
+                        return@launch
+                    }
+                }
             }
 
-            // Check if any volumes with DCIM are mounted (generic device)
+            // Check if any volumes with DCIM are mounted (device already connected but no USB match)
             val (volumes, volDebug) = withContext(Dispatchers.IO) { volumeClient.findMountedVolumes() }
             debug.appendLine(volDebug)
 
             if (volumes.isNotEmpty()) {
                 debug.appendLine("Found ${volumes.size} mounted volume(s) with DCIM")
+                val fallbackProfile = DeviceProfile(
+                    vendorId = 0,
+                    brand = "USB Device",
+                    transferMode = TransferMode.VOLUME,
+                    subfolder = "USB"
+                )
                 _state.value = _state.value.copy(
-                    deviceType = DeviceType.DJI, // Treat any mounted volume as DJI-style
+                    deviceProfile = fallbackProfile,
                     cameraDetected = true,
                     cameraName = "USB Device",
                     debugLog = debug.toString()
@@ -197,15 +231,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             debug.appendLine("No supported device found")
             _state.value = _state.value.copy(
                 transferState = TransferState.ERROR,
-                errorMessage = "No device detected.\nConnect Lumix (Tether mode) or DJI drone via USB-C.",
+                errorMessage = "No device detected.\nConnect a camera or drone via USB-C.",
                 debugLog = debug.toString()
             )
         }
     }
 
-    // ─── DJI / Volume-based transfer ───
+    // ─── Volume-based transfer (DJI, Blackmagic, Insta360, etc.) ───
 
-    private suspend fun startDji(debug: StringBuilder) {
+    private suspend fun startVolume(profile: DeviceProfile, debug: StringBuilder) {
         // Check if we have file access permission
         if (!hasStoragePermission()) {
             debug.appendLine("MANAGE_EXTERNAL_STORAGE not granted — requesting")
@@ -305,7 +339,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _state.value = _state.value.copy(transferState = TransferState.TRANSFERRING)
             try {
-                val subfolder = if (_state.value.deviceType == DeviceType.DJI) "DJI" else "USB"
+                val subfolder = _state.value.deviceProfile?.subfolder ?: "USB"
                 val result = fileTransferEngine.transferFiles(volumeFiles, subfolder) { progress ->
                     _state.value = _state.value.copy(progress = progress)
                 }
@@ -328,7 +362,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _state.value = _state.value.copy(transferState = TransferState.TRANSFERRING)
             try {
-                val subfolder = if (_state.value.deviceType == DeviceType.DJI) "DJI" else "USB"
+                val subfolder = _state.value.deviceProfile?.subfolder ?: "USB"
                 val result = fileTransferEngine.transferFiles(volumeFiles.take(3), subfolder) { progress ->
                     _state.value = _state.value.copy(progress = progress)
                 }
@@ -339,9 +373,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ─── Lumix / MTP transfer ───
+    // ─── MTP transfer (Lumix, Canon, Nikon, Sony, etc.) ───
 
-    private suspend fun startLumix(device: android.hardware.usb.UsbDevice, debug: StringBuilder) {
+    private suspend fun startMtp(device: android.hardware.usb.UsbDevice, profile: DeviceProfile, debug: StringBuilder) {
         if (!mtpClient.hasPermission(device)) {
             _state.value = _state.value.copy(transferState = TransferState.AWAITING_PERMISSION, debugLog = debug.toString())
             val granted = mtpClient.requestPermission(device)
@@ -362,7 +396,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             _state.value = _state.value.copy(transferState = TransferState.SCANNING, debugLog = debug.toString())
 
-            val (handles, scanDebug) = withContext(Dispatchers.IO) { mtpClient.quickScan() }
+            val (handles, scanDebug) = withContext(Dispatchers.IO) { mtpClient.quickScan(profile.mtpQuirks) }
             debug.appendLine(scanDebug)
             mtpHandles = handles
 
@@ -385,7 +419,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.value = _state.value.copy(transferState = TransferState.TRANSFERRING)
             try {
                 if (!mtpClient.isConnected) throw Exception("Camera disconnected")
-                val result = mtpTransferEngine.transferFromHandles(mtpClient, mtpHandles, getApplication()) { progress ->
+                val subfolder = _state.value.deviceProfile?.subfolder ?: "Lumix"
+                val result = mtpTransferEngine.transferFromHandles(mtpClient, mtpHandles, subfolder, getApplication()) { progress ->
                     _state.value = _state.value.copy(progress = progress)
                 }
                 if (result.transferred > 0) prefs.totalTransferred = prefs.totalTransferred + result.transferred
@@ -403,7 +438,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.value = _state.value.copy(transferState = TransferState.TRANSFERRING)
             try {
                 if (!mtpClient.isConnected) throw Exception("Camera disconnected")
-                val result = mtpTransferEngine.transferFromHandles(mtpClient, mtpHandles.take(3).toIntArray(), getApplication()) { progress ->
+                val subfolder = _state.value.deviceProfile?.subfolder ?: "Lumix"
+                val result = mtpTransferEngine.transferFromHandles(mtpClient, mtpHandles.take(3).toIntArray(), subfolder, getApplication()) { progress ->
                     _state.value = _state.value.copy(progress = progress)
                 }
                 _state.value = _state.value.copy(transferState = TransferState.DONE, result = result)
@@ -413,21 +449,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ─── Dispatchers (route to correct device) ───
+    // ─── Dispatchers (route to correct transfer mode) ───
 
     fun transfer() {
-        when (_state.value.deviceType) {
-            DeviceType.LUMIX -> transferMtp()
-            DeviceType.DJI -> transferVolume()
-            DeviceType.UNKNOWN -> {}
+        when (_state.value.deviceProfile?.transferMode) {
+            TransferMode.MTP -> transferMtp()
+            TransferMode.VOLUME -> transferVolume()
+            null -> {}
         }
     }
 
     fun testTransfer() {
-        when (_state.value.deviceType) {
-            DeviceType.LUMIX -> testTransferMtp()
-            DeviceType.DJI -> testTransferVolume()
-            DeviceType.UNKNOWN -> {}
+        when (_state.value.deviceProfile?.transferMode) {
+            TransferMode.MTP -> testTransferMtp()
+            TransferMode.VOLUME -> testTransferVolume()
+            null -> {}
         }
     }
 
