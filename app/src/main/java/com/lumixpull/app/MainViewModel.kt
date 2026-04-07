@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbManager
 import android.os.Build
+import android.os.Environment
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -47,6 +48,7 @@ data class UiState(
     val result: TransferResult? = null,
     val errorMessage: String? = null,
     val debugLog: String = "",
+    val needsStoragePermission: Boolean = false,
     // Volume picker for DJI
     val availableVolumes: List<MountedVolume> = emptyList(),
     val selectedVolumePath: String? = null
@@ -102,6 +104,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             cameraDetected = false,
             debugLog = _state.value.debugLog + "\n$msg"
         )
+    }
+
+    fun hasStoragePermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            true
+        }
     }
 
     fun setCrashLog(log: String) {
@@ -196,6 +206,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ─── DJI / Volume-based transfer ───
 
     private suspend fun startDji(debug: StringBuilder) {
+        // Check if we have file access permission
+        if (!hasStoragePermission()) {
+            debug.appendLine("MANAGE_EXTERNAL_STORAGE not granted — requesting")
+            _state.value = _state.value.copy(
+                needsStoragePermission = true,
+                transferState = TransferState.PICK_VOLUME,
+                availableVolumes = emptyList(),
+                debugLog = debug.toString()
+            )
+            return
+        }
+        debug.appendLine("Storage permission: granted")
+
         val (volumes, volDebug) = withContext(Dispatchers.IO) { volumeClient.findMountedVolumes() }
         debug.appendLine(volDebug)
 

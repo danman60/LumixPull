@@ -97,6 +97,16 @@ class MainActivity : ComponentActivity() {
         openDocumentTree.launch(null)
     }
 
+    fun launchStoragePermission() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            val intent = android.content.Intent(
+                android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                android.net.Uri.parse("package:$packageName")
+            )
+            startActivity(intent)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -122,7 +132,8 @@ class MainActivity : ComponentActivity() {
                         onTestTransfer = { viewModel.testTransfer() },
                         onResetHistory = viewModel::resetHistory,
                         onSelectVolume = { viewModel.selectVolume(it) },
-                        onPickFolder = { launchFolderPicker() }
+                        onPickFolder = { launchFolderPicker() },
+                        onGrantPermission = { launchStoragePermission() }
                     )
                 }
             }
@@ -138,7 +149,8 @@ fun LumixPullScreen(
     onResetHistory: () -> Unit,
     onTestTransfer: () -> Unit = {},
     onSelectVolume: (String) -> Unit = {},
-    onPickFolder: () -> Unit = {}
+    onPickFolder: () -> Unit = {},
+    onGrantPermission: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -169,7 +181,7 @@ fun LumixPullScreen(
                     TransferState.AWAITING_PERMISSION -> PermissionView()
                     TransferState.CONNECTING -> ConnectingView()
                     TransferState.SCANNING -> ScanningView()
-                    TransferState.PICK_VOLUME -> VolumePickerView(state, onSelectVolume, onPickFolder)
+                    TransferState.PICK_VOLUME -> VolumePickerView(state, onSelectVolume, onPickFolder, onGrantPermission, onRetry)
                     TransferState.READY -> ReadyView(state, onTransfer, onTestTransfer)
                     TransferState.TRANSFERRING -> TransferringView(state.progress)
                     TransferState.DONE -> DoneView(state, onRetry, onResetHistory)
@@ -262,7 +274,7 @@ fun SetupInstructions() {
             Spacer(modifier = Modifier.height(10.dp))
             InstructionStep(3, "Allow Access", "Tap Allow on the permission popup", Icons.Outlined.Security)
             Spacer(modifier = Modifier.height(10.dp))
-            InstructionStep(4, "Transfer", "Tap Transfer Photos or Test with 3", Icons.Outlined.Sync)
+            InstructionStep(4, "Transfer", "Tap Transfer or Test with 3 files", Icons.Outlined.Sync)
             Spacer(modifier = Modifier.height(10.dp))
             InstructionStep(5, "Google Photos", "Library > Photos on device > Lumix", Icons.Outlined.PhotoLibrary)
         }
@@ -331,9 +343,9 @@ fun ScanningView() {
     Spacer(modifier = Modifier.height(40.dp))
     PulsingIcon(Icons.Default.PhotoLibrary, LumixPrimary)
     Spacer(modifier = Modifier.height(20.dp))
-    Text("Scanning Photos", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+    Text("Scanning Files", fontSize = 16.sp, fontWeight = FontWeight.Medium)
     Spacer(modifier = Modifier.height(6.dp))
-    Text("Finding JPEGs on card...", fontSize = 13.sp, color = LumixOnSurfaceVariant)
+    Text("Finding photos and videos on card...", fontSize = 13.sp, color = LumixOnSurfaceVariant)
 }
 
 @Composable
@@ -377,7 +389,7 @@ fun PulsingIcon(icon: ImageVector, tint: Color) {
 // ─── Ready ───
 
 @Composable
-fun VolumePickerView(state: UiState, onSelectVolume: (String) -> Unit, onPickFolder: () -> Unit) {
+fun VolumePickerView(state: UiState, onSelectVolume: (String) -> Unit, onPickFolder: () -> Unit, onGrantPermission: () -> Unit, onRetry: () -> Unit) {
     // Device header
     Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(48.dp), tint = LumixPrimary)
     Spacer(modifier = Modifier.height(12.dp))
@@ -387,6 +399,38 @@ fun VolumePickerView(state: UiState, onSelectVolume: (String) -> Unit, onPickFol
         fontWeight = FontWeight.Bold
     )
     Spacer(modifier = Modifier.height(4.dp))
+
+    // Permission request
+    if (state.needsStoragePermission) {
+        Text("File access permission needed", fontSize = 13.sp, color = LumixOnSurfaceVariant)
+        Spacer(modifier = Modifier.height(16.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = LumixSurfaceElevated),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Column(modifier = Modifier.padding(18.dp)) {
+                Text("One-time setup", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Grant \"All files access\" so LumixPull can read USB devices directly.", fontSize = 12.sp, color = LumixOnSurfaceVariant, lineHeight = 16.sp)
+            }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        Button(
+            onClick = onGrantPermission,
+            modifier = Modifier.fillMaxWidth().height(54.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = LumixPrimary, contentColor = LumixOnPrimary)
+        ) { Text("Grant Permission", fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = onRetry,
+            modifier = Modifier.fillMaxWidth().height(44.dp),
+            shape = RoundedCornerShape(12.dp)
+        ) { Text("Retry After Granting", fontSize = 13.sp) }
+        return
+    }
+
     Text("Select storage to transfer from", fontSize = 13.sp, color = LumixOnSurfaceVariant)
     Spacer(modifier = Modifier.height(20.dp))
 
@@ -495,7 +539,7 @@ fun ReadyView(state: UiState, onTransfer: () -> Unit, onTestTransfer: () -> Unit
                 letterSpacing = (-1).sp
             )
             Text(
-                "photos ready to transfer",
+                "files ready to transfer",
                 fontSize = 13.sp,
                 color = LumixOnSurfaceVariant
             )
@@ -513,7 +557,7 @@ fun ReadyView(state: UiState, onTransfer: () -> Unit, onTestTransfer: () -> Unit
     ) {
         Icon(Icons.Outlined.Sync, contentDescription = null, modifier = Modifier.size(20.dp))
         Spacer(modifier = Modifier.width(8.dp))
-        Text("Transfer Photos", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+        Text("Transfer All", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
     }
 
     Spacer(modifier = Modifier.height(10.dp))
@@ -646,7 +690,7 @@ fun DoneView(state: UiState, onRescan: () -> Unit, onResetHistory: () -> Unit) {
 
             if (result != null && result.transferred > 0) {
                 Text(
-                    "${result.transferred} photos transferred",
+                    "${result.transferred} files transferred",
                     fontSize = 18.sp,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -660,7 +704,7 @@ fun DoneView(state: UiState, onRescan: () -> Unit, onResetHistory: () -> Unit) {
             } else {
                 Text("All caught up", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(modifier = Modifier.height(4.dp))
-                Text("No new photos to transfer", fontSize = 13.sp, color = LumixOnSurfaceVariant)
+                Text("No new files to transfer", fontSize = 13.sp, color = LumixOnSurfaceVariant)
             }
         }
     }
