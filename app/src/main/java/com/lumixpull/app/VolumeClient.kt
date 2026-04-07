@@ -133,11 +133,17 @@ class VolumeClient(private val context: Context) {
             }
         }
 
-        // Check getExternalFilesDirs for additional volumes
+        // Check getExternalFilesDirs for additional volumes (skip primary/phone storage)
         val extDirs = context.getExternalFilesDirs(null)
+        val primaryPath = android.os.Environment.getExternalStorageDirectory().absolutePath
         for (dir in extDirs) {
             if (dir == null) continue
             val volumeRoot = findVolumeRoot(dir) ?: continue
+            // Skip phone's own storage
+            if (volumeRoot.absolutePath == primaryPath || volumeRoot.absolutePath.startsWith("/storage/emulated")) {
+                debug.appendLine("  Skipping phone storage via extFilesDirs: ${volumeRoot.absolutePath}")
+                continue
+            }
             if (volumes.any { it.path == volumeRoot.absolutePath }) continue
             val dcim = java.io.File(volumeRoot, "DCIM")
             if (dcim.exists() && dcim.isDirectory) {
