@@ -101,11 +101,11 @@ class MainActivity : ComponentActivity() {
 
                     LumixPullScreen(
                         state = state,
-                        onRetry = { viewModel.startMtp() },
-                        onTransfer = { viewModel.transferMtp() },
-                        onTransferAll = { viewModel.transferAllMtp() },
-                        onTestTransfer = { viewModel.testTransferMtp() },
-                        onResetHistory = viewModel::resetHistory
+                        onRetry = { viewModel.detectAndConnect() },
+                        onTransfer = { viewModel.transfer() },
+                        onTestTransfer = { viewModel.testTransfer() },
+                        onResetHistory = viewModel::resetHistory,
+                        onSelectVolume = { viewModel.selectVolume(it) }
                     )
                 }
             }
@@ -118,9 +118,9 @@ fun LumixPullScreen(
     state: UiState,
     onRetry: () -> Unit,
     onTransfer: () -> Unit,
-    onTransferAll: () -> Unit,
     onResetHistory: () -> Unit,
-    onTestTransfer: () -> Unit = {}
+    onTestTransfer: () -> Unit = {},
+    onSelectVolume: (String) -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -151,7 +151,8 @@ fun LumixPullScreen(
                     TransferState.AWAITING_PERMISSION -> PermissionView()
                     TransferState.CONNECTING -> ConnectingView()
                     TransferState.SCANNING -> ScanningView()
-                    TransferState.READY -> ReadyView(state, onTransfer, onTransferAll, onTestTransfer)
+                    TransferState.PICK_VOLUME -> VolumePickerView(state, onSelectVolume)
+                    TransferState.READY -> ReadyView(state, onTransfer, onTestTransfer)
                     TransferState.TRANSFERRING -> TransferringView(state.progress)
                     TransferState.DONE -> DoneView(state, onRetry, onResetHistory)
                     TransferState.ERROR -> ErrorView(state.errorMessage, onRetry)
@@ -358,7 +359,42 @@ fun PulsingIcon(icon: ImageVector, tint: Color) {
 // ─── Ready ───
 
 @Composable
-fun ReadyView(state: UiState, onTransfer: () -> Unit, onTransferAll: () -> Unit, onTestTransfer: () -> Unit = {}) {
+fun VolumePickerView(state: UiState, onSelectVolume: (String) -> Unit) {
+    Text("Select Storage", fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+    Spacer(modifier = Modifier.height(8.dp))
+    Text(
+        "${state.cameraName ?: "Device"} has multiple storage locations",
+        fontSize = 13.sp,
+        color = LumixOnSurfaceVariant,
+        textAlign = TextAlign.Center
+    )
+    Spacer(modifier = Modifier.height(16.dp))
+
+    for (volume in state.availableVolumes) {
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            colors = CardDefaults.cardColors(containerColor = LumixSurfaceElevated),
+            shape = RoundedCornerShape(14.dp),
+            onClick = { onSelectVolume(volume.path) }
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(24.dp), tint = LumixPrimary)
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(volume.name, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    Text("${volume.fileCount} media files", fontSize = 12.sp, color = LumixOnSurfaceVariant)
+                    Text(volume.path, fontSize = 10.sp, color = LumixOnSurfaceVariant.copy(alpha = 0.6f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ReadyView(state: UiState, onTransfer: () -> Unit, onTestTransfer: () -> Unit = {}) {
     // Photo count card
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -414,25 +450,13 @@ fun ReadyView(state: UiState, onTransfer: () -> Unit, onTransferAll: () -> Unit,
 
     Spacer(modifier = Modifier.height(10.dp))
 
-    // Secondary buttons row
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        OutlinedButton(
-            onClick = onTestTransfer,
-            modifier = Modifier.weight(1f).height(44.dp),
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = LumixTertiary),
-            border = ButtonDefaults.outlinedButtonBorder(enabled = true)
-        ) { Text("Test (3)", fontSize = 13.sp) }
-
-        OutlinedButton(
-            onClick = onTransferAll,
-            modifier = Modifier.weight(1f).height(44.dp),
-            shape = RoundedCornerShape(12.dp)
-        ) { Text("Transfer All", fontSize = 13.sp) }
-    }
+    Spacer(modifier = Modifier.height(10.dp))
+    OutlinedButton(
+        onClick = onTestTransfer,
+        modifier = Modifier.fillMaxWidth().height(44.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = LumixTertiary)
+    ) { Text("Test (3 files)", fontSize = 13.sp) }
 }
 
 // ─── Transferring ───

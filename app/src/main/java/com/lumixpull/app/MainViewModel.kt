@@ -16,11 +16,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+enum class DeviceType {
+    LUMIX,  // Panasonic camera — MTP transfer
+    DJI,    // DJI drone — mounted volume transfer
+    UNKNOWN
+}
+
 enum class TransferState {
     IDLE,
     AWAITING_PERMISSION,
     CONNECTING,
     SCANNING,
+    PICK_VOLUME,
     READY,
     TRANSFERRING,
     DONE,
@@ -29,6 +36,7 @@ enum class TransferState {
 
 data class UiState(
     val transferState: TransferState = TransferState.IDLE,
+    val deviceType: DeviceType = DeviceType.UNKNOWN,
     val cameraDetected: Boolean = false,
     val cameraName: String? = null,
     val hasUsbPermission: Boolean = false,
@@ -37,26 +45,31 @@ data class UiState(
     val progress: TransferProgress? = null,
     val result: TransferResult? = null,
     val errorMessage: String? = null,
-    val debugLog: String = ""
+    val debugLog: String = "",
+    // Volume picker for DJI
+    val availableVolumes: List<MountedVolume> = emptyList(),
+    val selectedVolumePath: String? = null
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val mtpClient = MtpCameraClient(application)
     private val mtpTransferEngine = MtpTransferEngine(application)
+    private val volumeClient = VolumeClient(application)
+    private val fileTransferEngine = FileTransferEngine(application)
     val prefs = TransferPrefs(application)
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var mtpHandles: IntArray = intArrayOf()
+    private var volumeFiles: List<MediaFile> = emptyList()
     private var autoStarted = false
 
-    // Listen for USB detach to handle camera disconnect gracefully
     private val usbDetachReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
             if (intent.action == UsbManager.ACTION_USB_DEVICE_DETACHED) {
-                handleCameraDisconnected()
+                handleDeviceDisconnected()
             }
         }
     }
@@ -70,15 +83,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun handleCameraDisconnected() {
+    private fun handleDeviceDisconnected() {
         val currentState = _state.value.transferState
         mtpClient.disconnect()
         mtpHandles = intArrayOf()
+        volumeFiles = emptyList()
 
         val msg = when (currentState) {
-            TransferState.TRANSFERRING -> "Camera disconnected during transfer"
-            TransferState.SCANNING, TransferState.CONNECTING -> "Camera disconnected"
-            else -> "Camera unplugged"
+            TransferState.TRANSFERRING -> "Device disconnected during transfer"
+            TransferState.SCANNING, TransferState.CONNECTING -> "Device disconnected"
+            else -> "Device unplugged"
         }
 
         _state.value = _state.value.copy(
@@ -96,87 +110,237 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    /** Auto-start MTP connection on app open */
     fun autoStart() {
         if (autoStarted) return
         autoStarted = true
-        startMtp()
+        detectAndConnect()
     }
 
-    fun startMtp() {
+    // ─── Auto-detect device type ───
+
+    fun detectAndConnect() {
         viewModelScope.launch {
             val debug = StringBuilder()
-
-            // Reset state for fresh connection
             _state.value = _state.value.copy(
                 transferState = TransferState.CONNECTING,
-                errorMessage = null,
-                result = null,
-                progress = null
+                errorMessage = null, result = null, progress = null
             )
 
-            val device = mtpClient.findCamera()
-            if (device == null) {
-                debug.appendLine("No Panasonic camera found on USB")
+            // Check for DJI first (mounts as volume)
+            val djiDevice = volumeClient.findDjiDevice()
+            if (djiDevice != null) {
+                debug.appendLine("DJI device found: ${djiDevice.productName} (VID=0x${"%04X".format(djiDevice.vendorId)} PID=0x${"%04X".format(djiDevice.productId)})")
                 _state.value = _state.value.copy(
-                    transferState = TransferState.ERROR,
-                    errorMessage = "No camera detected on USB.\nConnect camera in Tether mode.",
+                    deviceType = DeviceType.DJI,
+                    cameraDetected = true,
+                    cameraName = djiDevice.productName ?: "DJI Drone",
                     debugLog = debug.toString()
                 )
+                startDji(debug)
                 return@launch
             }
 
-            debug.appendLine("Found: ${device.productName} (VID=0x${"%04X".format(device.vendorId)} PID=0x${"%04X".format(device.productId)})")
-            _state.value = _state.value.copy(cameraDetected = true, cameraName = device.productName, debugLog = debug.toString())
-
-            if (!mtpClient.hasPermission(device)) {
+            // Check for Lumix camera (MTP)
+            val lumixDevice = mtpClient.findCamera()
+            if (lumixDevice != null) {
+                debug.appendLine("Lumix found: ${lumixDevice.productName} (VID=0x${"%04X".format(lumixDevice.vendorId)} PID=0x${"%04X".format(lumixDevice.productId)})")
                 _state.value = _state.value.copy(
-                    transferState = TransferState.AWAITING_PERMISSION,
+                    deviceType = DeviceType.LUMIX,
+                    cameraDetected = true,
+                    cameraName = lumixDevice.productName,
                     debugLog = debug.toString()
                 )
-                val granted = mtpClient.requestPermission(device)
-                if (!granted) {
-                    _state.value = _state.value.copy(
-                        transferState = TransferState.ERROR,
-                        errorMessage = "USB permission denied.",
-                        debugLog = debug.toString()
-                    )
-                    return@launch
-                }
+                startLumix(lumixDevice, debug)
+                return@launch
             }
 
-            debug.appendLine("USB permission granted")
-            _state.value = _state.value.copy(hasUsbPermission = true, transferState = TransferState.CONNECTING, debugLog = debug.toString())
+            // Check if any volumes with DCIM are mounted (generic device)
+            val (volumes, volDebug) = withContext(Dispatchers.IO) { volumeClient.findMountedVolumes() }
+            debug.appendLine(volDebug)
+
+            if (volumes.isNotEmpty()) {
+                debug.appendLine("Found ${volumes.size} mounted volume(s) with DCIM")
+                _state.value = _state.value.copy(
+                    deviceType = DeviceType.DJI, // Treat any mounted volume as DJI-style
+                    cameraDetected = true,
+                    cameraName = "USB Device",
+                    debugLog = debug.toString()
+                )
+                handleVolumes(volumes, debug)
+                return@launch
+            }
+
+            debug.appendLine("No supported device found")
+            _state.value = _state.value.copy(
+                transferState = TransferState.ERROR,
+                errorMessage = "No device detected.\nConnect Lumix (Tether mode) or DJI drone via USB-C.",
+                debugLog = debug.toString()
+            )
+        }
+    }
+
+    // ─── DJI / Volume-based transfer ───
+
+    private suspend fun startDji(debug: StringBuilder) {
+        // Find mounted volumes
+        val (volumes, volDebug) = withContext(Dispatchers.IO) { volumeClient.findMountedVolumes() }
+        debug.appendLine(volDebug)
+
+        if (volumes.isEmpty()) {
+            debug.appendLine("DJI detected but no mounted volumes found")
+            _state.value = _state.value.copy(
+                transferState = TransferState.ERROR,
+                errorMessage = "DJI detected but storage not mounted.\nTry unplugging and reconnecting.",
+                debugLog = debug.toString()
+            )
+            return
+        }
+
+        handleVolumes(volumes, debug)
+    }
+
+    private fun handleVolumes(volumes: List<MountedVolume>, debug: StringBuilder) {
+        if (volumes.size == 1) {
+            // Single volume — go straight to scan
+            selectVolume(volumes[0].path)
+            _state.value = _state.value.copy(
+                availableVolumes = volumes,
+                debugLog = debug.toString()
+            )
+        } else {
+            // Multiple volumes — let user pick
+            _state.value = _state.value.copy(
+                transferState = TransferState.PICK_VOLUME,
+                availableVolumes = volumes,
+                debugLog = debug.toString()
+            )
+        }
+    }
+
+    fun selectVolume(volumePath: String) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                transferState = TransferState.SCANNING,
+                selectedVolumePath = volumePath
+            )
 
             try {
-                val connectDebug = withContext(Dispatchers.IO) { mtpClient.connect(device) }
-                debug.appendLine(connectDebug)
+                val files = withContext(Dispatchers.IO) { volumeClient.scanMedia(volumePath) }
+                volumeFiles = files
 
-                if (!mtpClient.isConnected) {
-                    throw Exception("Camera connection lost after connect")
-                }
-
-                _state.value = _state.value.copy(transferState = TransferState.SCANNING, debugLog = debug.toString())
-
-                val (handles, scanDebug) = withContext(Dispatchers.IO) { mtpClient.quickScan() }
-                debug.appendLine(scanDebug)
-
-                mtpHandles = handles
+                val photoCount = files.count { !it.isVideo }
+                val videoCount = files.count { it.isVideo }
+                val debug = _state.value.debugLog + "\nScanned: $photoCount photos, $videoCount videos"
 
                 _state.value = _state.value.copy(
-                    transferState = if (handles.isNotEmpty()) TransferState.READY else TransferState.DONE,
-                    newPhotoCount = handles.size,
-                    totalPhotosOnCard = handles.size,
-                    result = if (handles.isEmpty()) TransferResult(0, 0, emptyList()) else null,
-                    debugLog = debug.toString()
+                    transferState = if (files.isNotEmpty()) TransferState.READY else TransferState.DONE,
+                    newPhotoCount = files.size,
+                    totalPhotosOnCard = files.size,
+                    result = if (files.isEmpty()) TransferResult(0, 0, emptyList()) else null,
+                    debugLog = debug
                 )
             } catch (e: Exception) {
-                debug.appendLine("Error: ${e.message}")
                 _state.value = _state.value.copy(
                     transferState = TransferState.ERROR,
-                    errorMessage = "${e.message}",
-                    debugLog = debug.toString()
+                    errorMessage = "Scan failed: ${e.message}"
                 )
+            }
+        }
+    }
+
+    fun transferVolume() {
+        if (volumeFiles.isEmpty()) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(transferState = TransferState.TRANSFERRING)
+            try {
+                val subfolder = if (_state.value.deviceType == DeviceType.DJI) "DJI" else "USB"
+                val result = fileTransferEngine.transferFiles(volumeFiles, subfolder) { progress ->
+                    _state.value = _state.value.copy(progress = progress)
+                }
+                if (result.transferred > 0) {
+                    prefs.totalTransferred = prefs.totalTransferred + result.transferred
+                }
+                _state.value = _state.value.copy(transferState = TransferState.DONE, result = result)
+                volumeFiles = emptyList()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    transferState = TransferState.ERROR,
+                    errorMessage = "Transfer failed: ${e.message}"
+                )
+            }
+        }
+    }
+
+    fun testTransferVolume() {
+        if (volumeFiles.isEmpty()) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(transferState = TransferState.TRANSFERRING)
+            try {
+                val subfolder = if (_state.value.deviceType == DeviceType.DJI) "DJI" else "USB"
+                val result = fileTransferEngine.transferFiles(volumeFiles.take(3), subfolder) { progress ->
+                    _state.value = _state.value.copy(progress = progress)
+                }
+                _state.value = _state.value.copy(transferState = TransferState.DONE, result = result)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(transferState = TransferState.ERROR, errorMessage = "Test failed: ${e.message}")
+            }
+        }
+    }
+
+    // ─── Lumix / MTP transfer ───
+
+    private suspend fun startLumix(device: android.hardware.usb.UsbDevice, debug: StringBuilder) {
+        if (!mtpClient.hasPermission(device)) {
+            _state.value = _state.value.copy(transferState = TransferState.AWAITING_PERMISSION, debugLog = debug.toString())
+            val granted = mtpClient.requestPermission(device)
+            if (!granted) {
+                _state.value = _state.value.copy(transferState = TransferState.ERROR, errorMessage = "USB permission denied.", debugLog = debug.toString())
+                return
+            }
+        }
+
+        debug.appendLine("USB permission granted")
+        _state.value = _state.value.copy(hasUsbPermission = true, transferState = TransferState.CONNECTING, debugLog = debug.toString())
+
+        try {
+            val connectDebug = withContext(Dispatchers.IO) { mtpClient.connect(device) }
+            debug.appendLine(connectDebug)
+
+            if (!mtpClient.isConnected) throw Exception("Connection lost after connect")
+
+            _state.value = _state.value.copy(transferState = TransferState.SCANNING, debugLog = debug.toString())
+
+            val (handles, scanDebug) = withContext(Dispatchers.IO) { mtpClient.quickScan() }
+            debug.appendLine(scanDebug)
+            mtpHandles = handles
+
+            _state.value = _state.value.copy(
+                transferState = if (handles.isNotEmpty()) TransferState.READY else TransferState.DONE,
+                newPhotoCount = handles.size,
+                totalPhotosOnCard = handles.size,
+                result = if (handles.isEmpty()) TransferResult(0, 0, emptyList()) else null,
+                debugLog = debug.toString()
+            )
+        } catch (e: Exception) {
+            debug.appendLine("Error: ${e.message}")
+            _state.value = _state.value.copy(transferState = TransferState.ERROR, errorMessage = "${e.message}", debugLog = debug.toString())
+        }
+    }
+
+    fun transferMtp() {
+        if (mtpHandles.isEmpty()) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(transferState = TransferState.TRANSFERRING)
+            try {
+                if (!mtpClient.isConnected) throw Exception("Camera disconnected")
+                val result = mtpTransferEngine.transferFromHandles(mtpClient, mtpHandles, getApplication()) { progress ->
+                    _state.value = _state.value.copy(progress = progress)
+                }
+                if (result.transferred > 0) prefs.totalTransferred = prefs.totalTransferred + result.transferred
+                _state.value = _state.value.copy(transferState = TransferState.DONE, result = result)
+                mtpHandles = intArrayOf()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(transferState = TransferState.ERROR, errorMessage = "Transfer failed: ${e.message}")
             }
         }
     }
@@ -197,28 +361,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun transferMtp() {
-        if (mtpHandles.isEmpty()) return
-        viewModelScope.launch {
-            _state.value = _state.value.copy(transferState = TransferState.TRANSFERRING)
-            try {
-                if (!mtpClient.isConnected) throw Exception("Camera disconnected")
-                val result = mtpTransferEngine.transferFromHandles(mtpClient, mtpHandles, getApplication()) { progress ->
-                    _state.value = _state.value.copy(progress = progress)
-                }
-                if (result.transferred > 0) {
-                    prefs.totalTransferred = prefs.totalTransferred + result.transferred
-                }
-                _state.value = _state.value.copy(transferState = TransferState.DONE, result = result)
-                mtpHandles = intArrayOf()
-            } catch (e: Exception) {
-                _state.value = _state.value.copy(transferState = TransferState.ERROR, errorMessage = "Transfer failed: ${e.message}")
-            }
+    // ─── Dispatchers (route to correct device) ───
+
+    fun transfer() {
+        when (_state.value.deviceType) {
+            DeviceType.LUMIX -> transferMtp()
+            DeviceType.DJI -> transferVolume()
+            DeviceType.UNKNOWN -> {}
         }
     }
 
-    fun transferAllMtp() {
-        transferMtp()
+    fun testTransfer() {
+        when (_state.value.deviceType) {
+            DeviceType.LUMIX -> testTransferMtp()
+            DeviceType.DJI -> testTransferVolume()
+            DeviceType.UNKNOWN -> {}
+        }
     }
 
     // ─── Common ───

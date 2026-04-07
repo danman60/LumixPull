@@ -2,4 +2,6 @@
 <resources>
     <!-- Panasonic Lumix cameras (vendor ID 0x04DA = 1242) -->
     <usb-device vendor-id="1242" />
+    <!-- DJI drones (vendor ID 0x2CA3 = 11427) -->
+    <usb-device vendor-id="11427" />
 </resources>
