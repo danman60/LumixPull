@@ -7,6 +7,7 @@ import android.net.Uri
 import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbManager
+import android.mtp.MtpObjectInfo
 import android.os.Build
 import android.os.Environment
 import androidx.lifecycle.AndroidViewModel
@@ -25,10 +26,21 @@ enum class TransferState {
     SCANNING,
     PICK_VOLUME,
     READY,
+    PICKING,
     TRANSFERRING,
     DONE,
     ERROR
 }
+
+data class PickerFile(
+    val index: Int,
+    val name: String,
+    val sizeBytes: Long,
+    val lastModified: Long,
+    val isVideo: Boolean,
+    val isTransferred: Boolean,
+    val thumbnailPath: String?  // null for MTP
+)
 
 data class UiState(
     val transferState: TransferState = TransferState.IDLE,
@@ -45,7 +57,10 @@ data class UiState(
     val needsStoragePermission: Boolean = false,
     // Volume picker for mounted-volume devices
     val availableVolumes: List<MountedVolume> = emptyList(),
-    val selectedVolumePath: String? = null
+    val selectedVolumePath: String? = null,
+    // File picker
+    val pickerFiles: List<PickerFile> = emptyList(),
+    val selectedIndices: Set<Int> = emptySet()
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -62,6 +77,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var mtpHandles: IntArray = intArrayOf()
     private var volumeFiles: List<MediaFile> = emptyList()
     private var autoStarted = false
+    private val mtpInfoCache = mutableMapOf<Int, MtpObjectInfo?>()
 
     private val usbDetachReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
@@ -121,7 +137,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         detectAndConnect()
     }
 
-    // ─── Auto-detect device type via DeviceRegistry ───
+    // --- Auto-detect device type via DeviceRegistry ---
 
     fun detectAndConnect() {
         viewModelScope.launch {
@@ -162,7 +178,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            // No known device matched — try auto-detection via interface classes
+            // No known device matched -- try auto-detection via interface classes
             for (device in usbDevices) {
                 val detectedMode = DeviceRegistry.detectTransferMode(device)
                 debug.appendLine("  Auto-detect ${device.productName ?: "Unknown"}: $detectedMode")
@@ -237,12 +253,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ─── Volume-based transfer (DJI, Blackmagic, Insta360, etc.) ───
+    // --- Volume-based transfer (DJI, Blackmagic, Insta360, etc.) ---
 
     private suspend fun startVolume(profile: DeviceProfile, debug: StringBuilder) {
         // Check if we have file access permission
         if (!hasStoragePermission()) {
-            debug.appendLine("MANAGE_EXTERNAL_STORAGE not granted — requesting")
+            debug.appendLine("MANAGE_EXTERNAL_STORAGE not granted -- requesting")
             _state.value = _state.value.copy(
                 needsStoragePermission = true,
                 transferState = TransferState.PICK_VOLUME,
@@ -259,14 +275,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val accessibleVolumes = volumes.filter { it.accessible }
 
         if (accessibleVolumes.size == 1 && accessibleVolumes[0].fileCount > 0) {
-            // Single accessible volume with files — go straight to scan
+            // Single accessible volume with files -- go straight to scan
             selectVolume(accessibleVolumes[0].path)
             _state.value = _state.value.copy(
                 availableVolumes = volumes,
                 debugLog = debug.toString()
             )
         } else {
-            // Show picker — either multiple volumes, no accessible ones, or need SAF
+            // Show picker -- either multiple volumes, no accessible ones, or need SAF
             _state.value = _state.value.copy(
                 transferState = TransferState.PICK_VOLUME,
                 availableVolumes = volumes,
@@ -373,7 +389,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ─── MTP transfer (Lumix, Canon, Nikon, Sony, etc.) ───
+    // --- MTP transfer (Lumix, Canon, Nikon, Sony, etc.) ---
 
     private suspend fun startMtp(device: android.hardware.usb.UsbDevice, profile: DeviceProfile, debug: StringBuilder) {
         if (!mtpClient.hasPermission(device)) {
@@ -449,7 +465,186 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ─── Dispatchers (route to correct transfer mode) ───
+    // --- File Picker ---
+
+    fun openPicker() {
+        val mode = _state.value.deviceProfile?.transferMode
+        when (mode) {
+            TransferMode.VOLUME -> {
+                val files = volumeFiles.mapIndexed { index, file ->
+                    PickerFile(
+                        index = index,
+                        name = file.name,
+                        sizeBytes = file.sizeBytes,
+                        lastModified = file.lastModified,
+                        isVideo = file.isVideo,
+                        isTransferred = prefs.isTransferred(file.name),
+                        thumbnailPath = file.file?.absolutePath
+                    )
+                }
+                val selected = files.filter { !it.isTransferred }.map { it.index }.toSet()
+                _state.value = _state.value.copy(
+                    transferState = TransferState.PICKING,
+                    pickerFiles = files,
+                    selectedIndices = selected
+                )
+            }
+            TransferMode.MTP -> {
+                // Build placeholder entries for MTP handles
+                val files = mtpHandles.mapIndexed { index, handle ->
+                    val cached = mtpInfoCache[handle]
+                    if (cached != null) {
+                        val name = cached.name ?: "File $index"
+                        PickerFile(
+                            index = index,
+                            name = name,
+                            sizeBytes = cached.compressedSize.toLong(),
+                            lastModified = cached.dateModified.toLong(),
+                            isVideo = name.lowercase().let { it.endsWith(".mp4") || it.endsWith(".mov") },
+                            isTransferred = prefs.isTransferred(name),
+                            thumbnailPath = null
+                        )
+                    } else {
+                        PickerFile(
+                            index = index,
+                            name = "Loading...",
+                            sizeBytes = 0,
+                            lastModified = 0,
+                            isVideo = false,
+                            isTransferred = false,
+                            thumbnailPath = null
+                        )
+                    }
+                }
+                val selected = files.filter { !it.isTransferred && it.name != "Loading..." }.map { it.index }.toSet()
+                _state.value = _state.value.copy(
+                    transferState = TransferState.PICKING,
+                    pickerFiles = files,
+                    selectedIndices = selected
+                )
+                // Kick off initial batch load
+                loadMtpInfoBatch(0, 30)
+            }
+            null -> {}
+        }
+    }
+
+    fun loadMtpInfoBatch(startIndex: Int, count: Int) {
+        if (mtpHandles.isEmpty()) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                val end = minOf(startIndex + count, mtpHandles.size)
+                for (i in startIndex until end) {
+                    val handle = mtpHandles[i]
+                    if (mtpInfoCache.containsKey(handle)) continue
+                    try {
+                        val info = mtpClient.getInfo(handle)
+                        mtpInfoCache[handle] = info
+                    } catch (_: Exception) {
+                        mtpInfoCache[handle] = null
+                    }
+
+                    // Update UI after each item so user sees progress
+                    val currentFiles = _state.value.pickerFiles.toMutableList()
+                    if (i < currentFiles.size) {
+                        val cached = mtpInfoCache[handle]
+                        if (cached != null) {
+                            val name = cached.name ?: "File $i"
+                            val isTransferred = prefs.isTransferred(name)
+                            currentFiles[i] = PickerFile(
+                                index = i,
+                                name = name,
+                                sizeBytes = cached.compressedSize.toLong(),
+                                lastModified = cached.dateModified.toLong(),
+                                isVideo = name.lowercase().let { it.endsWith(".mp4") || it.endsWith(".mov") },
+                                isTransferred = isTransferred,
+                                thumbnailPath = null
+                            )
+                            // Auto-select new (non-transferred) files as they load
+                            val newSelected = if (!isTransferred) {
+                                _state.value.selectedIndices + i
+                            } else {
+                                _state.value.selectedIndices
+                            }
+                            _state.value = _state.value.copy(
+                                pickerFiles = currentFiles,
+                                selectedIndices = newSelected
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun toggleSelection(index: Int) {
+        val current = _state.value.selectedIndices
+        val updated = if (current.contains(index)) current - index else current + index
+        _state.value = _state.value.copy(selectedIndices = updated)
+    }
+
+    fun selectAllNew() {
+        val selected = _state.value.pickerFiles
+            .filter { !it.isTransferred && it.name != "Loading..." }
+            .map { it.index }
+            .toSet()
+        _state.value = _state.value.copy(selectedIndices = selected)
+    }
+
+    fun deselectAll() {
+        _state.value = _state.value.copy(selectedIndices = emptySet())
+    }
+
+    fun transferSelected() {
+        val selected = _state.value.selectedIndices
+        if (selected.isEmpty()) return
+
+        val mode = _state.value.deviceProfile?.transferMode
+        viewModelScope.launch {
+            _state.value = _state.value.copy(transferState = TransferState.TRANSFERRING)
+            try {
+                when (mode) {
+                    TransferMode.MTP -> {
+                        if (!mtpClient.isConnected) throw Exception("Camera disconnected")
+                        val filteredHandles = selected.sorted().map { mtpHandles[it] }.toIntArray()
+                        val subfolder = _state.value.deviceProfile?.subfolder ?: "Lumix"
+                        val result = mtpTransferEngine.transferFromHandles(mtpClient, filteredHandles, subfolder, prefs) { progress ->
+                            _state.value = _state.value.copy(progress = progress)
+                        }
+                        if (result.transferred > 0) prefs.totalTransferred = prefs.totalTransferred + result.transferred
+                        _state.value = _state.value.copy(transferState = TransferState.DONE, result = result)
+                        mtpHandles = intArrayOf()
+                    }
+                    TransferMode.VOLUME -> {
+                        val filteredFiles = selected.sorted().map { volumeFiles[it] }
+                        val subfolder = _state.value.deviceProfile?.subfolder ?: "USB"
+                        val result = fileTransferEngine.transferFiles(filteredFiles, subfolder, prefs) { progress ->
+                            _state.value = _state.value.copy(progress = progress)
+                        }
+                        if (result.transferred > 0) prefs.totalTransferred = prefs.totalTransferred + result.transferred
+                        _state.value = _state.value.copy(transferState = TransferState.DONE, result = result)
+                        volumeFiles = emptyList()
+                    }
+                    null -> {}
+                }
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    transferState = TransferState.ERROR,
+                    errorMessage = "Transfer failed: ${e.message}"
+                )
+            }
+        }
+    }
+
+    fun closePicker() {
+        _state.value = _state.value.copy(
+            transferState = TransferState.READY,
+            pickerFiles = emptyList(),
+            selectedIndices = emptySet()
+        )
+    }
+
+    // --- Dispatchers (route to correct transfer mode) ---
 
     fun transfer() {
         when (_state.value.deviceProfile?.transferMode) {
@@ -467,10 +662,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ─── Common ───
+    // --- Common ---
 
     fun resetHistory() {
         prefs.resetHistory()
+        mtpInfoCache.clear()
         _state.value = _state.value.copy(transferState = TransferState.IDLE)
     }
 

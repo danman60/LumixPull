@@ -9,16 +9,24 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
@@ -26,6 +34,7 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Usb
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.outlined.Cable
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.Security
@@ -40,6 +49,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -49,8 +59,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
+import coil3.size.Size
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-// Lumix-inspired color palette — warm amber + deep charcoal
+// Lumix-inspired color palette -- warm amber + deep charcoal
 private val LumixPrimary = Color(0xFFE8A838)
 private val LumixPrimaryDark = Color(0xFFCC8B1F)
 private val LumixOnPrimary = Color(0xFF1A1200)
@@ -127,13 +144,21 @@ class MainActivity : ComponentActivity() {
 
                     LumixPullScreen(
                         state = state,
+                        transferMode = state.deviceProfile?.transferMode,
                         onRetry = { viewModel.detectAndConnect() },
                         onTransfer = { viewModel.transfer() },
                         onTestTransfer = { viewModel.testTransfer() },
                         onResetHistory = viewModel::resetHistory,
                         onSelectVolume = { viewModel.selectVolume(it) },
                         onPickFolder = { launchFolderPicker() },
-                        onGrantPermission = { launchStoragePermission() }
+                        onGrantPermission = { launchStoragePermission() },
+                        onOpenPicker = { viewModel.openPicker() },
+                        onToggleSelection = { viewModel.toggleSelection(it) },
+                        onSelectAllNew = { viewModel.selectAllNew() },
+                        onDeselectAll = { viewModel.deselectAll() },
+                        onTransferSelected = { viewModel.transferSelected() },
+                        onClosePicker = { viewModel.closePicker() },
+                        onLoadMtpInfo = { start, count -> viewModel.loadMtpInfoBatch(start, count) }
                     )
                 }
             }
@@ -144,14 +169,37 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun LumixPullScreen(
     state: UiState,
+    transferMode: TransferMode?,
     onRetry: () -> Unit,
     onTransfer: () -> Unit,
     onResetHistory: () -> Unit,
     onTestTransfer: () -> Unit = {},
     onSelectVolume: (String) -> Unit = {},
     onPickFolder: () -> Unit = {},
-    onGrantPermission: () -> Unit = {}
+    onGrantPermission: () -> Unit = {},
+    onOpenPicker: () -> Unit = {},
+    onToggleSelection: (Int) -> Unit = {},
+    onSelectAllNew: () -> Unit = {},
+    onDeselectAll: () -> Unit = {},
+    onTransferSelected: () -> Unit = {},
+    onClosePicker: () -> Unit = {},
+    onLoadMtpInfo: (Int, Int) -> Unit = { _, _ -> }
 ) {
+    // File picker uses its own full-screen layout (no scrollable column)
+    if (state.transferState == TransferState.PICKING) {
+        FilePickerView(
+            state = state,
+            transferMode = transferMode,
+            onToggleSelection = onToggleSelection,
+            onSelectAllNew = onSelectAllNew,
+            onDeselectAll = onDeselectAll,
+            onTransferSelected = onTransferSelected,
+            onClosePicker = onClosePicker,
+            onLoadMtpInfo = onLoadMtpInfo
+        )
+        return
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -182,7 +230,8 @@ fun LumixPullScreen(
                     TransferState.CONNECTING -> ConnectingView()
                     TransferState.SCANNING -> ScanningView()
                     TransferState.PICK_VOLUME -> VolumePickerView(state, onSelectVolume, onPickFolder, onGrantPermission, onRetry)
-                    TransferState.READY -> ReadyView(state, onTransfer, onTestTransfer)
+                    TransferState.READY -> ReadyView(state, onTransfer, onTestTransfer, onOpenPicker)
+                    TransferState.PICKING -> {} // handled above
                     TransferState.TRANSFERRING -> TransferringView(state.progress)
                     TransferState.DONE -> DoneView(state, onRetry, onResetHistory)
                     TransferState.ERROR -> ErrorView(state.errorMessage, onRetry)
@@ -230,7 +279,7 @@ fun AppHeader() {
     )
 }
 
-// ─── Idle / Setup ───
+// --- Idle / Setup ---
 
 @Composable
 fun IdleView(onConnect: () -> Unit) {
@@ -316,7 +365,7 @@ fun InstructionStep(number: Int, title: String, detail: String, icon: ImageVecto
     }
 }
 
-// ─── Loading States ───
+// --- Loading States ---
 
 @Composable
 fun PermissionView() {
@@ -386,7 +435,7 @@ fun PulsingIcon(icon: ImageVector, tint: Color) {
     }
 }
 
-// ─── Ready ───
+// --- Ready ---
 
 @Composable
 fun VolumePickerView(state: UiState, onSelectVolume: (String) -> Unit, onPickFolder: () -> Unit, onGrantPermission: () -> Unit, onRetry: () -> Unit) {
@@ -506,7 +555,7 @@ fun VolumePickerView(state: UiState, onSelectVolume: (String) -> Unit, onPickFol
 }
 
 @Composable
-fun ReadyView(state: UiState, onTransfer: () -> Unit, onTestTransfer: () -> Unit = {}) {
+fun ReadyView(state: UiState, onTransfer: () -> Unit, onTestTransfer: () -> Unit = {}, onOpenPicker: () -> Unit = {}) {
     // Photo count card
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -562,6 +611,18 @@ fun ReadyView(state: UiState, onTransfer: () -> Unit, onTestTransfer: () -> Unit
 
     Spacer(modifier = Modifier.height(10.dp))
 
+    // Pick Files button
+    OutlinedButton(
+        onClick = onOpenPicker,
+        modifier = Modifier.fillMaxWidth().height(48.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = LumixPrimary)
+    ) {
+        Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(modifier = Modifier.width(8.dp))
+        Text("Pick Files", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+    }
+
     Spacer(modifier = Modifier.height(10.dp))
     OutlinedButton(
         onClick = onTestTransfer,
@@ -571,7 +632,316 @@ fun ReadyView(state: UiState, onTransfer: () -> Unit, onTestTransfer: () -> Unit
     ) { Text("Test (3 files)", fontSize = 13.sp) }
 }
 
-// ─── Transferring ───
+// --- File Picker ---
+
+@Composable
+fun FilePickerView(
+    state: UiState,
+    transferMode: TransferMode?,
+    onToggleSelection: (Int) -> Unit,
+    onSelectAllNew: () -> Unit,
+    onDeselectAll: () -> Unit,
+    onTransferSelected: () -> Unit,
+    onClosePicker: () -> Unit,
+    onLoadMtpInfo: (Int, Int) -> Unit
+) {
+    val selectedCount = state.selectedIndices.size
+    val totalCount = state.pickerFiles.size
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+    ) {
+        // Top bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(LumixSurfaceElevated)
+                .padding(horizontal = 4.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onClosePicker) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = LumixOnSurface
+                )
+            }
+            Text(
+                "$selectedCount of $totalCount selected",
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                color = LumixOnSurface,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onSelectAllNew) {
+                Text("All New", fontSize = 13.sp, color = LumixPrimary)
+            }
+            TextButton(onClick = onDeselectAll) {
+                Text("None", fontSize = 13.sp, color = LumixOnSurfaceVariant)
+            }
+        }
+
+        // Content
+        Box(modifier = Modifier.weight(1f)) {
+            when (transferMode) {
+                TransferMode.VOLUME -> {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        contentPadding = PaddingValues(4.dp),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        items(state.pickerFiles, key = { it.index }) { file ->
+                            VolumeFileCard(
+                                file = file,
+                                isSelected = state.selectedIndices.contains(file.index),
+                                onToggle = { onToggleSelection(file.index) }
+                            )
+                        }
+                    }
+                }
+                TransferMode.MTP -> {
+                    val listState = rememberLazyListState()
+
+                    // Trigger lazy loading for visible range
+                    val firstVisible by remember { derivedStateOf { listState.firstVisibleItemIndex } }
+                    val visibleCount by remember { derivedStateOf { listState.layoutInfo.visibleItemsInfo.size } }
+
+                    LaunchedEffect(firstVisible, visibleCount) {
+                        val loadStart = maxOf(0, firstVisible - 10)
+                        val loadCount = visibleCount + 20
+                        onLoadMtpInfo(loadStart, loadCount)
+                    }
+
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        items(state.pickerFiles, key = { it.index }) { file ->
+                            MtpFileRow(
+                                file = file,
+                                isSelected = state.selectedIndices.contains(file.index),
+                                onToggle = { onToggleSelection(file.index) }
+                            )
+                        }
+                    }
+                }
+                null -> {}
+            }
+        }
+
+        // Bottom transfer button
+        Surface(
+            color = LumixSurfaceElevated,
+            shadowElevation = 8.dp
+        ) {
+            Button(
+                onClick = onTransferSelected,
+                enabled = selectedCount > 0,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = LumixPrimary,
+                    contentColor = LumixOnPrimary,
+                    disabledContainerColor = LumixSurfaceVariant,
+                    disabledContentColor = LumixOnSurfaceVariant
+                )
+            ) {
+                Icon(Icons.Outlined.Sync, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    if (selectedCount > 0) "Transfer $selectedCount Selected" else "No Files Selected",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun VolumeFileCard(
+    file: PickerFile,
+    isSelected: Boolean,
+    onToggle: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .padding(4.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onToggle)
+            .background(LumixSurfaceElevated)
+    ) {
+        Column {
+            // Thumbnail area
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f)
+            ) {
+                if (file.thumbnailPath != null) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(File(file.thumbnailPath))
+                            .size(Size(300, 300))
+                            .build(),
+                        contentDescription = file.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    // Fallback icon
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(LumixSurfaceVariant)
+                    ) {
+                        Icon(
+                            if (file.isVideo) Icons.Default.Videocam else Icons.Default.PhotoLibrary,
+                            contentDescription = null,
+                            modifier = Modifier.size(32.dp),
+                            tint = LumixOnSurfaceVariant
+                        )
+                    }
+                }
+
+                // Transferred overlay
+                if (file.isTransferred) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.4f))
+                    )
+                    // Green checkmark badge
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = "Already transferred",
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(4.dp)
+                            .size(18.dp),
+                        tint = LumixSuccess
+                    )
+                }
+
+                // Checkbox overlay top-right
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = { onToggle() },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(36.dp),
+                    colors = CheckboxDefaults.colors(
+                        checkedColor = LumixPrimary,
+                        uncheckedColor = Color.White.copy(alpha = 0.7f),
+                        checkmarkColor = LumixOnPrimary
+                    )
+                )
+            }
+
+            // File name
+            Text(
+                file.name,
+                fontSize = 10.sp,
+                color = if (file.isTransferred) LumixOnSurfaceVariant.copy(alpha = 0.5f) else LumixOnSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 3.dp)
+            )
+        }
+    }
+}
+
+@Composable
+fun MtpFileRow(
+    file: PickerFile,
+    isSelected: Boolean,
+    onToggle: () -> Unit
+) {
+    val isLoading = file.name == "Loading..."
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .clickable(enabled = !isLoading, onClick = onToggle)
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Icon
+        Icon(
+            if (file.isVideo) Icons.Default.Videocam else Icons.Default.PhotoLibrary,
+            contentDescription = null,
+            modifier = Modifier.size(24.dp),
+            tint = if (isLoading) LumixOnSurfaceVariant.copy(alpha = 0.3f)
+                   else if (file.isTransferred) LumixOnSurfaceVariant.copy(alpha = 0.5f)
+                   else LumixPrimary
+        )
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        // File info
+        Column(modifier = Modifier.weight(1f)) {
+            if (isLoading) {
+                Text(
+                    "Loading...",
+                    fontSize = 13.sp,
+                    color = LumixOnSurfaceVariant.copy(alpha = 0.4f)
+                )
+            } else {
+                Text(
+                    file.name,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (file.isTransferred) LumixOnSurfaceVariant.copy(alpha = 0.5f) else LumixOnSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                val sizeStr = formatBytes(file.sizeBytes)
+                val dateStr = if (file.lastModified > 0) {
+                    SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()).format(Date(file.lastModified * 1000))
+                } else ""
+                val detail = buildString {
+                    append(sizeStr)
+                    if (dateStr.isNotEmpty()) append(" \u2022 $dateStr")
+                    if (file.isTransferred) append(" (transferred)")
+                }
+                Text(
+                    detail,
+                    fontSize = 11.sp,
+                    color = if (file.isTransferred) LumixOnSurfaceVariant.copy(alpha = 0.4f) else LumixOnSurfaceVariant
+                )
+            }
+        }
+
+        // Checkbox
+        if (!isLoading) {
+            Checkbox(
+                checked = isSelected,
+                onCheckedChange = { onToggle() },
+                colors = CheckboxDefaults.colors(
+                    checkedColor = LumixPrimary,
+                    uncheckedColor = LumixOnSurfaceVariant,
+                    checkmarkColor = LumixOnPrimary
+                )
+            )
+        }
+    }
+
+    // Divider
+    HorizontalDivider(
+        color = LumixSurfaceVariant,
+        thickness = 0.5.dp,
+        modifier = Modifier.padding(start = 52.dp)
+    )
+}
+
+// --- Transferring ---
 
 @Composable
 fun TransferringView(progress: TransferProgress?) {
@@ -661,7 +1031,7 @@ fun TransferringView(progress: TransferProgress?) {
     }
 }
 
-// ─── Done ───
+// --- Done ---
 
 @Composable
 fun DoneView(state: UiState, onRescan: () -> Unit, onResetHistory: () -> Unit) {
@@ -731,7 +1101,7 @@ fun DoneView(state: UiState, onRescan: () -> Unit, onResetHistory: () -> Unit) {
     }
 }
 
-// ─── Error ───
+// --- Error ---
 
 @Composable
 fun ErrorView(errorMessage: String?, onRetry: () -> Unit) {
@@ -768,7 +1138,7 @@ fun ErrorView(errorMessage: String?, onRetry: () -> Unit) {
     SetupInstructions()
 }
 
-// ─── Debug Panel ───
+// --- Debug Panel ---
 
 @Composable
 fun DebugPanel(log: String) {
