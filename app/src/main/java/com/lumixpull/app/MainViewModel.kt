@@ -340,7 +340,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.value = _state.value.copy(transferState = TransferState.TRANSFERRING)
             try {
                 val subfolder = _state.value.deviceProfile?.subfolder ?: "USB"
-                val result = fileTransferEngine.transferFiles(volumeFiles, subfolder) { progress ->
+                val result = fileTransferEngine.transferFiles(volumeFiles, subfolder, prefs) { progress ->
                     _state.value = _state.value.copy(progress = progress)
                 }
                 if (result.transferred > 0) {
@@ -363,7 +363,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.value = _state.value.copy(transferState = TransferState.TRANSFERRING)
             try {
                 val subfolder = _state.value.deviceProfile?.subfolder ?: "USB"
-                val result = fileTransferEngine.transferFiles(volumeFiles.take(3), subfolder) { progress ->
+                val result = fileTransferEngine.transferFiles(volumeFiles.take(3), subfolder, prefs) { progress ->
                     _state.value = _state.value.copy(progress = progress)
                 }
                 _state.value = _state.value.copy(transferState = TransferState.DONE, result = result)
@@ -420,7 +420,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 if (!mtpClient.isConnected) throw Exception("Camera disconnected")
                 val subfolder = _state.value.deviceProfile?.subfolder ?: "Lumix"
-                val result = mtpTransferEngine.transferFromHandles(mtpClient, mtpHandles, subfolder, getApplication()) { progress ->
+                val result = mtpTransferEngine.transferFromHandles(mtpClient, mtpHandles, subfolder, prefs) { progress ->
                     _state.value = _state.value.copy(progress = progress)
                 }
                 if (result.transferred > 0) prefs.totalTransferred = prefs.totalTransferred + result.transferred
@@ -439,7 +439,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 if (!mtpClient.isConnected) throw Exception("Camera disconnected")
                 val subfolder = _state.value.deviceProfile?.subfolder ?: "Lumix"
-                val result = mtpTransferEngine.transferFromHandles(mtpClient, mtpHandles.take(3).toIntArray(), subfolder, getApplication()) { progress ->
+                val result = mtpTransferEngine.transferFromHandles(mtpClient, mtpHandles.take(3).toIntArray(), subfolder, prefs) { progress ->
                     _state.value = _state.value.copy(progress = progress)
                 }
                 _state.value = _state.value.copy(transferState = TransferState.DONE, result = result)

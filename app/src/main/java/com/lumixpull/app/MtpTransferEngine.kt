@@ -39,16 +39,13 @@ class MtpTransferEngine(private val context: Context) {
         client: MtpCameraClient,
         handles: IntArray,
         subfolder: String = "Lumix",
-        appContext: Context,
+        prefs: TransferPrefs,
         onProgress: (TransferProgress) -> Unit
     ): TransferResult = withContext(Dispatchers.IO) {
         val failed = mutableListOf<String>()
         var transferred = 0
         var skipped = 0
         var bytesTransferred = 0L
-
-        // Build set of already-transferred filenames to skip duplicates
-        val existingNames = getExistingFiles(subfolder)
 
         val tempDir = File(context.cacheDir, "mtp_transfer")
         tempDir.mkdirs()
@@ -85,8 +82,8 @@ class MtpTransferEngine(private val context: Context) {
                 continue
             }
 
-            // Skip already transferred
-            if (existingNames.contains(name)) {
+            // Skip already transferred (checked against persistent log)
+            if (prefs.isTransferred(name)) {
                 skipped++
                 continue
             }
@@ -114,7 +111,7 @@ class MtpTransferEngine(private val context: Context) {
                 } else {
                     saveToMediaStore(name, tempFile, info.dateModified.toLong(), subfolder)
                 }
-                existingNames.add(name) // Track for duplicate prevention
+                prefs.markTransferred(name) // Persist immediately so crash resumes correctly
                 bytesTransferred += tempFile.length()
                 transferred++
             } catch (e: Exception) {
@@ -159,40 +156,18 @@ class MtpTransferEngine(private val context: Context) {
         )
     }
 
-    /**
-     * Query MediaStore for existing files in Pictures/<subfolder> and Movies/<subfolder> to avoid duplicates.
-     */
-    private fun getExistingFiles(subfolder: String): MutableSet<String> {
-        val names = mutableSetOf<String>()
-        try {
-            for (contentUri in listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)) {
-                val cursor = context.contentResolver.query(
-                    contentUri,
-                    arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
-                    "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?",
-                    arrayOf("%$subfolder%"),
-                    null
-                )
-                cursor?.use {
-                    while (it.moveToNext()) {
-                        val name = it.getString(0)
-                        if (name != null) names.add(name)
-                    }
-                }
-            }
-        } catch (_: Exception) {}
-        return names
-    }
+    // Duplicate detection now handled by TransferPrefs (persistent filename log)
 
     // Keep old method for compatibility with MtpPhoto list
     suspend fun transferPhotos(
         client: MtpCameraClient,
         photos: List<MtpPhoto>,
         subfolder: String = "Lumix",
+        prefs: TransferPrefs,
         onProgress: (TransferProgress) -> Unit
     ): TransferResult {
         val handles = photos.map { it.objectHandle }.toIntArray()
-        return transferFromHandles(client, handles, subfolder, context, onProgress)
+        return transferFromHandles(client, handles, subfolder, prefs, onProgress)
     }
 
     private fun saveToMediaStore(name: String, sourceFile: File, dateTaken: Long, subfolder: String) {

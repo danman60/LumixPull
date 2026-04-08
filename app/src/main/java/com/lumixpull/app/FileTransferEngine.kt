@@ -20,6 +20,7 @@ class FileTransferEngine(private val context: Context) {
     suspend fun transferFiles(
         files: List<MediaFile>,
         subfolder: String = "DJI",
+        prefs: TransferPrefs,
         onProgress: (TransferProgress) -> Unit
     ): TransferResult = withContext(Dispatchers.IO) {
         val totalBytes = files.sumOf { it.sizeBytes }
@@ -28,13 +29,9 @@ class FileTransferEngine(private val context: Context) {
         var transferred = 0
         var skipped = 0
 
-        val existingPhotos = getExistingFiles("${Environment.DIRECTORY_PICTURES}/$subfolder")
-        val existingVideos = getExistingFiles("${Environment.DIRECTORY_MOVIES}/$subfolder")
-        val allExisting = existingPhotos + existingVideos
-
         for ((index, file) in files.withIndex()) {
-            // Skip duplicates
-            if (allExisting.contains(file.name)) {
+            // Skip already transferred (persistent log)
+            if (prefs.isTransferred(file.name)) {
                 skipped++
                 continue
             }
@@ -55,6 +52,7 @@ class FileTransferEngine(private val context: Context) {
                 } else {
                     savePhotoToMediaStore(file, subfolder)
                 }
+                prefs.markTransferred(file.name)
                 bytesTransferred += file.sizeBytes
                 transferred++
             } catch (e: Exception) {
@@ -179,27 +177,7 @@ class FileTransferEngine(private val context: Context) {
         } catch (_: Exception) {}
     }
 
-    private fun getExistingFiles(relativePath: String): Set<String> {
-        val names = mutableSetOf<String>()
-        try {
-            // Check both images and videos
-            for (contentUri in listOf(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)) {
-                val cursor = context.contentResolver.query(
-                    contentUri,
-                    arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
-                    "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?",
-                    arrayOf("$relativePath%"),
-                    null
-                )
-                cursor?.use {
-                    while (it.moveToNext()) {
-                        it.getString(0)?.let { name -> names.add(name) }
-                    }
-                }
-            }
-        } catch (_: Exception) {}
-        return names
-    }
+    // Duplicate detection now handled by TransferPrefs (persistent filename log)
 
     private fun formatSize(bytes: Long): String = when {
         bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
